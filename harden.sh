@@ -232,7 +232,10 @@ collect_answers() {
   OTHER_USERS=$(awk -F: -v me="$NEW_USER" '$3>=1000 && $3<60000 && $1!=me && $7!~/(nologin|false)$/ {print $1}' /etc/passwd | xargs)
   if [[ -n $OTHER_USERS ]]; then
     warn "Найдены другие аккаунты с доступом к shell: $OTHER_USERS"
-    if env_yn LOCK_OTHER_USERS "Заблокировать их (пароль, shell, sudo; данные не удаляются)?" y; then LOCK_OTHER_USERS=yes; else LOCK_OTHER_USERS=no; fi
+    if [[ -n ${SUDO_USER:-} && " $OTHER_USERS " == *" $SUDO_USER "* ]]; then
+      warn "Ты сейчас работаешь под '$SUDO_USER' (AWS/Oracle/Azure так делают) — после настройки входи как $NEW_USER."
+    fi
+    if env_yn LOCK_OTHER_USERS "Заблокировать их ПОСЛЕ проверки входа под $NEW_USER (пароль, shell, sudo; данные не удаляются)?" y; then LOCK_OTHER_USERS=yes; else LOCK_OTHER_USERS=no; fi
   else
     LOCK_OTHER_USERS=no
   fi
@@ -780,11 +783,13 @@ Banner /etc/issue.net
 LogLevel VERBOSE
 
 # --- Криптография (только поддерживаемые этой версией OpenSSH, вкл. пост-квантовые KEX) ---
-KexAlgorithms $kex
-Ciphers $ciphers
-MACs $macs
-HostKeyAlgorithms $hostkeys
 EOF
+    # Пустой список (старый OpenSSH не знает тип в ssh -Q) сломал бы sshd — тогда строку не пишем
+    [[ -n $kex ]]      && echo "KexAlgorithms $kex"
+    [[ -n $ciphers ]]  && echo "Ciphers $ciphers"
+    [[ -n $macs ]]     && echo "MACs $macs"
+    [[ -n $hostkeys ]] && echo "HostKeyAlgorithms $hostkeys"
+    true
   } >"$SSHD_DROPIN"
   chmod 600 "$SSHD_DROPIN"
 }
@@ -847,6 +852,9 @@ setup_ssh() {
   if [[ $USER_HAS_PASSWORD == yes ]]; then
     echo "     sudo -v        # проверить, что sudo работает (введи пароль)"
   fi
+  echo
+  echo "  Не пускает (timeout)? У облачных хостеров есть свой firewall в панели"
+  echo "  (AWS Security Group, Hetzner/Oracle/GCP Firewall) — открой там TCP $SSH_PORT и проверь снова."
   echo
   local tries=0
   until ask_yn "Вход по ключу на порт $SSH_PORT работает?" n; do
@@ -953,7 +961,6 @@ main() {
   collect_answers
   install_packages
   setup_user
-  lock_other_users
   harden_system
   install_server_status
   setup_auditd
@@ -962,6 +969,9 @@ main() {
   setup_fail2ban
   setup_crowdsec
   setup_ssh
+  # Только после того, как вход под новым пользователем подтверждён —
+  # иначе на AWS/Oracle (вход под ubuntu/opc) при откате SSH можно остаться без доступа
+  lock_other_users
   lock_root
   final_report
   rm -f "$PUBKEY_FILE"

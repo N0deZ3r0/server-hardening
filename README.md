@@ -60,3 +60,18 @@ sudo bash harden.sh --install-status
 ```
 
 Отключить: `sudo rm /etc/profile.d/99-server-status.sh`. Без сводки при установке: `SERVER_STATUS=no`.
+
+## Совместимость с хостингами
+
+| | |
+|---|---|
+| ОС | Debian 12/13, Ubuntu 22.04/24.04/26.04. RHEL/Alma/Rocky/CentOS — не поддерживаются |
+| Виртуализация | KVM, VMware, Hyper-V, Xen — полностью. LXC/OpenVZ — частично (auditd, AppArmor и часть sysctl пропускаются) |
+| Архитектура | x86_64 и ARM64 |
+| Проверено вживую | Ubuntu 24.04, KVM (OpenStack + cloud-init) |
+
+**Облачные хостеры (AWS, Oracle, Hetzner Cloud, GCP, Azure):** у них есть свой firewall в панели. Открой там новый порт SSH **до** подтверждения входа. Если порт закрыт, проверка входа не пройдёт, ответь `n`, и SSH откатится.
+
+**Oracle Cloud:** образ Ubuntu содержит свои правила iptables, которые конфликтуют с UFW. Перед запуском удали их: `sudo apt purge -y iptables-persistent netfilter-persistent`.
+
+**Вход под `ubuntu`/`admin`/`opc` (AWS, Oracle, Azure):** этот пользователь блокируется только после того, как вход под новым пользователем подтверждён.
