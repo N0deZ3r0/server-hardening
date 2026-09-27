@@ -1358,7 +1358,7 @@ run_check() {
   # sshd -T refuses to run without its runtime directory, which is missing whenever sshd
   # is socket-activated and idle (Ubuntu 24.04). It lives in /run (tmpfs), so creating it
   # leaves nothing behind.
-  [[ -d /run/sshd ]] || mkdir -p -m 755 /run/sshd
+  [[ -d /run/sshd ]] || install -d -m 755 /run/sshd
   cfg=$(sshd -T 2>&1) || { v=$(head -1 <<<"$cfg"); cfg=""; }
   sv() { awk -v k="$1" '$1==k{$1=""; sub(/^ /,""); print; exit}' <<<"$cfg"; }
   if [[ -z $cfg ]]; then
