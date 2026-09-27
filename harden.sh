@@ -27,7 +27,7 @@
 # =============================================================================
 set -Eeuo pipefail
 
-VERSION="2026.09"
+HARDEN_VERSION="2026.09"
 LOG_FILE="/var/log/harden.log"
 REPORT_FILE="/root/harden-report.txt"
 BACKUP_DIR="/root/harden-backup-$(date +%Y%m%d-%H%M%S)"
@@ -85,7 +85,7 @@ preflight() {
   [[ -d /etc/ufw ]] && cp -a /etc/ufw "$BACKUP_DIR/ufw"
   exec > >(tee -a "$LOG_FILE") 2>&1
 
-  echo "${C_BOLD}Server hardening v$VERSION — $OS_NAME (virt: $VIRT)${C_0}"
+  echo "${C_BOLD}Server hardening v$HARDEN_VERSION — $OS_NAME (virt: $VIRT)${C_0}"
   if [[ -z ${TMUX:-} && -z ${STY:-} ]]; then
     warn "Совет: запускай внутри tmux/screen, чтобы обрыв SSH не прервал настройку."
   fi
