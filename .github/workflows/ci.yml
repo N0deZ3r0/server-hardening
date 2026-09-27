@@ -1,0 +1,64 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# Read-only. Nothing here publishes anything.
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: Syntax, ShellCheck, smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      # First-party actions only: this script ends up running as root on
+      # other people's servers, so the list of things that can touch it stays short.
+      - uses: actions/checkout@v5
+
+      - name: Line endings are LF
+        # A CRLF that slips in from Windows turns every line into "command not found\r".
+        run: |
+          if grep -l $'\r' harden.sh; then
+            echo "::error file=harden.sh::CRLF line endings"; exit 1
+          fi
+
+      - name: bash -n
+        run: bash -n harden.sh
+
+      - name: ShellCheck — harden.sh
+        run: shellcheck --version && shellcheck -S warning harden.sh
+
+      - name: ShellCheck — embedded server-status
+        # The login summary is written out from a heredoc, so it is not a file
+        # ShellCheck would ever see on its own.
+        run: |
+          awk '/<<.STATUS_EOF.$/{f=1;next} /^STATUS_EOF$/{f=0} f' harden.sh > server-status
+          test -s server-status
+          bash -n server-status
+          shellcheck -S warning -s bash server-status
+          awk '/<<.HOOK_EOF.$/{f=1;next} /^HOOK_EOF$/{f=0} f' harden.sh > hook.sh
+          test -s hook.sh
+          sh -n hook.sh
+
+      - name: Smoke — help, and refusal without root
+        run: |
+          bash harden.sh --help | grep -q 'install-status'
+          out=$(bash harden.sh 2>&1 </dev/null) && { echo "::error::ran without root"; exit 1; }
+          echo "$out" | grep -q 'Run as root'
+
+      - name: Smoke — server-status runs on the runner
+        run: |
+          out=$(bash server-status)
+          echo "$out"
+          echo "$out" | grep -q 'SYSTEM STATUS'
+          echo "$out" | grep -q 'CPU:'
