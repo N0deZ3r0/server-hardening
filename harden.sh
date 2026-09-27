@@ -110,17 +110,20 @@ preflight() {
   fi
 
   # На свежем VPS первые минуты работают cloud-init и автообновления
-  # (хостер ставит обновления, генерирует ключи, может перезапускать SSH — это 1–10 минут)
+  # Хостер может делать полный apt upgrade (включая GRUB и ядро) и перезапускать SSH — 5–20 минут.
+  # Прерывать или перезагружать в это время НЕЛЬЗЯ: недоустановленный GRUB = сервер не загрузится.
   if command -v cloud-init >/dev/null && cloud-init status 2>/dev/null | grep -qE 'running|not started'; then
-    info "Хостер ещё делает первичную настройку сервера (cloud-init). Жду до 15 минут — это не зависание, Ctrl+C не нужен."
+    info "Хостер ещё делает первичную настройку (cloud-init: обновление системы, загрузчик, SSH)."
+    info "Жду завершения — это не зависание. Ctrl+C и перезагрузку НЕ делай."
     local waited=0 detail
-    while cloud-init status 2>/dev/null | grep -qE 'running|not started' && (( waited < 900 )); do
-      detail=$(tail -n 1 /var/log/cloud-init-output.log 2>/dev/null | cut -c1-70)
-      printf '\r    %3d сек... %-72s' "$waited" "$detail"
+    while cloud-init status 2>/dev/null | grep -qE 'running|not started'; do
+      (( waited >= 2700 )) && die "cloud-init не завершился за 45 минут. Проверь: cloud-init status --long"
+      detail=$(tail -n 1 /var/log/cloud-init-output.log 2>/dev/null | tr -cd '[:print:]' | cut -c1-60)
+      printf '\r    %2d:%02d  %-62s' $((waited / 60)) $((waited % 60)) "$detail"
       sleep 5; waited=$((waited + 5))
     done
     echo
-    if (( waited >= 900 )); then warn "cloud-init не завершился за 15 минут — продолжаю"; else ok "Первичная настройка хостера завершена"; fi
+    ok "Первичная настройка хостера завершена"
   fi
 
   # Текущие порты SSH (чтобы не отрезать себя до проверки)
@@ -816,6 +819,16 @@ final_report() {
     echo
     warn "Нужна перезагрузка: установлено новое ядро ($(uname -r) -> $(ls -1 /boot/vmlinuz-* | sort -V | tail -1 | sed 's|.*/vmlinuz-||'))"
     if env_yn REBOOT_NOW "Перезагрузить сейчас? (после — входи: ssh -p $SSH_PORT $NEW_USER@<IP>)" y; then
+      # Никогда не перезагружаемся посреди установки пакетов (GRUB/ядро)
+      local w=0
+      # (не по имени unattended-upgr — его shutdown-демон висит всегда; смотрим блокировки dpkg)
+      while pgrep -x 'apt|apt-get|dpkg' >/dev/null \
+            || { command -v fuser >/dev/null && fuser -s /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock 2>/dev/null; } \
+            || cloud-init status 2>/dev/null | grep -q running; do
+        (( w == 0 )) && info "Жду окончания установки пакетов перед перезагрузкой..."
+        (( w >= 1800 )) && { warn "Пакеты ставятся уже 30 минут — перезагрузку отменяю. Сделай позже: sudo reboot"; return 0; }
+        sleep 5; w=$((w + 5))
+      done
       info "Перезагрузка через 5 секунд..."
       rm -f "$PUBKEY_FILE"
       systemd-run --on-active=5 --unit=harden-reboot systemctl reboot >/dev/null
