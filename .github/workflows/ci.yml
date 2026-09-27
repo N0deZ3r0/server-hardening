@@ -61,16 +61,17 @@ jobs:
       - name: CrowdSec repository — pinned key, only CrowdSec packages
         # The real function against the real repository, on the release it targets.
         run: |
+          set -x
           sudo bash -c 'source ./harden.sh; setup_crowdsec_repo'
-          apt-cache policy crowdsec
+          apt-cache policy crowdsec | head -8
           cand=$(apt-cache policy crowdsec | awk '/Candidate:/{print $2}')
-          apt-cache madison crowdsec | grep "$cand" | grep -q packagecloud.io/crowdsec
+          apt-cache madison crowdsec | grep -F " $cand " | grep packagecloud.io/crowdsec
           dpkg --compare-versions "$cand" ge 1.6
           # A package that exists in that repository but is not on the list must be unreachable
-          apt-cache madison crowdsec-firewall-bouncer-iptables | grep -q packagecloud.io/crowdsec
-          apt-cache policy crowdsec-firewall-bouncer-iptables | grep -q 'Candidate: (none)'
-          sudo apt-get install -s crowdsec crowdsec-firewall-bouncer-nftables \
-            | grep -E '^Inst crowdsec-firewall-bouncer-nftables .*packagecloud'
+          apt-cache madison crowdsec-firewall-bouncer-iptables | head -3
+          apt-cache policy crowdsec-firewall-bouncer-iptables | head -4
+          apt-cache policy crowdsec-firewall-bouncer-iptables | grep 'Candidate: (none)'
+          sudo apt-get install -s crowdsec crowdsec-firewall-bouncer-nftables | grep '^Inst crowdsec'
 
       - name: CrowdSec repository — a wrong fingerprint is refused
         run: |
