@@ -110,9 +110,17 @@ preflight() {
   fi
 
   # На свежем VPS первые минуты работают cloud-init и автообновления
-  if command -v cloud-init >/dev/null; then
-    info "Жду завершения cloud-init..."
-    timeout 600 cloud-init status --wait >/dev/null 2>&1 || true
+  # (хостер ставит обновления, генерирует ключи, может перезапускать SSH — это 1–10 минут)
+  if command -v cloud-init >/dev/null && cloud-init status 2>/dev/null | grep -qE 'running|not started'; then
+    info "Хостер ещё делает первичную настройку сервера (cloud-init). Жду до 15 минут — это не зависание, Ctrl+C не нужен."
+    local waited=0 detail
+    while cloud-init status 2>/dev/null | grep -qE 'running|not started' && (( waited < 900 )); do
+      detail=$(tail -n 1 /var/log/cloud-init-output.log 2>/dev/null | cut -c1-70)
+      printf '\r    %3d сек... %-72s' "$waited" "$detail"
+      sleep 5; waited=$((waited + 5))
+    done
+    echo
+    if (( waited >= 900 )); then warn "cloud-init не завершился за 15 минут — продолжаю"; else ok "Первичная настройка хостера завершена"; fi
   fi
 
   # Текущие порты SSH (чтобы не отрезать себя до проверки)
