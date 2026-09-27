@@ -10,11 +10,8 @@
 curl -fsSL https://raw.githubusercontent.com/N0deZ3r0/server-hardening/main/harden.sh -o harden.sh && sudo bash harden.sh
 ```
 
-Лучше запускать внутри `tmux`, чтобы обрыв связи не прервал настройку:
+Скрипт сам перезапускается внутри `tmux`: если SSH оборвётся, зайди снова и выполни `tmux attach -t harden`.
 
-```bash
-apt install -y tmux && tmux
-```
 
 ## Что спросит
 

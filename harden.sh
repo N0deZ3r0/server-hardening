@@ -67,6 +67,25 @@ env_yn() {  # env_yn VAR "Вопрос" default -> 0 если да (берёт �
 }
 
 # ---------- 0. проверки ----------
+# Обрыв SSH (а на свежих VPS хостер иногда перезапускает sshd в первые минуты)
+# не должен убить настройку на середине — поэтому сами уходим в tmux.
+relaunch_in_tmux() {
+  [[ -n ${TMUX:-} || -n ${STY:-} || -n ${HARDEN_NO_TMUX:-} ]] && return 0
+  command -v tmux >/dev/null || return 0
+  [[ -f $0 && -t 0 ]] || return 0
+  local script inner v
+  script=$(readlink -f "$0")
+  inner="env HARDEN_NO_TMUX=1"
+  for v in NEW_USER SSH_PORT SSH_PUBKEY GITHUB_KEYS_USER EXTRA_PORTS AUTO_REBOOT REBOOT_TIME LOCK_ROOT \
+           LOCK_OTHER_USERS INSTALL_CROWDSEC RUN_LYNIS REBOOT_NOW SET_USER_PASSWORD ADMIN_IP SSH_CLIENT; do
+    [[ -n ${!v+x} ]] && inner+=" $v=$(printf '%q' "${!v}")"
+  done
+  inner+=" bash $(printf '%q' "$script"); echo; read -rp 'Enter — закрыть окно tmux' _"
+  info "Запускаю внутри tmux. Если SSH оборвётся — зайди снова и выполни: tmux attach -t harden"
+  sleep 2
+  exec tmux new-session -A -s harden bash -c "$inner"
+}
+
 preflight() {
   [[ $EUID -eq 0 ]] || die "Запусти от root: sudo bash harden.sh"
   [[ -r /dev/tty ]] || die "Нужен интерактивный терминал (запускай в SSH-сессии)."
@@ -87,7 +106,7 @@ preflight() {
 
   echo "${C_BOLD}Server hardening v$HARDEN_VERSION — $OS_NAME (virt: $VIRT)${C_0}"
   if [[ -z ${TMUX:-} && -z ${STY:-} ]]; then
-    warn "Совет: запускай внутри tmux/screen, чтобы обрыв SSH не прервал настройку."
+    warn "tmux/screen не найден: обрыв SSH прервёт настройку (apt install tmux)."
   fi
 
   # На свежем VPS первые минуты работают cloud-init и автообновления
@@ -797,6 +816,8 @@ final_report() {
 }
 
 main() {
+  [[ $EUID -eq 0 ]] || die "Запусти от root: sudo bash harden.sh"
+  relaunch_in_tmux "$@"
   preflight
   collect_answers
   install_packages
