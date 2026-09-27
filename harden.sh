@@ -1116,7 +1116,6 @@ final_report() {
         sleep 5; w=$((w + 5))
       done
       info "$(T "Перезагрузка через 5 секунд..." "Rebooting in 5 seconds...")"
-      rm -f "$PUBKEY_FILE"
       systemd-run --on-active=5 --unit=harden-reboot systemctl reboot >/dev/null
     fi
   fi
@@ -1146,7 +1145,6 @@ main() {
   lock_other_users
   lock_root
   final_report
-  rm -f "$PUBKEY_FILE"
 }
 
 # Run unless sourced (CI sources the file to test single functions on a runner)
