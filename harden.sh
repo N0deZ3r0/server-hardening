@@ -282,11 +282,16 @@ install_packages() {
     apparmor apparmor-utils
     chrony libpam-pwquality
     lynis curl ca-certificates gnupg sudo openssh-server
+    libpam-tmpdir apt-show-versions acct sysstat
     rsyslog logrotate
   )
   [[ $IS_CONTAINER == no ]] && pkgs+=(auditd audispd-plugins)
   apt-get "${apt_opts[@]}" install "${pkgs[@]}"
   apt-get "${apt_opts[@]}" autoremove --purge
+  # Остатки конфигов удалённых пакетов (статус rc)
+  local rc_pkgs
+  rc_pkgs=$(dpkg -l | awk '/^rc/{print $2}')
+  [[ -n $rc_pkgs ]] && dpkg --purge $rc_pkgs >/dev/null
   ok "Пакеты установлены"
 }
 
@@ -407,6 +412,10 @@ net.ipv6.conf.default.accept_source_route = 0
 # --- производительность ---
 net.core.default_qdisc = fq
 net.ipv4.tcp_congestion_control = bbr
+# --- прочее (Lynis KRNL-6000) ---
+dev.tty.ldisc_autoload = 0
+kernel.core_uses_pid = 1
+kernel.ctrl-alt-del = 0
 EOF
   sysctl --system >/dev/null 2>&1 || warn "Часть sysctl не применилась (нормально для контейнеров)"
 
@@ -430,7 +439,9 @@ EOF
 
   # Предупреждающий баннер
   cat >/etc/issue.net <<'EOF'
-Authorized access only. All activity is logged and monitored.
+This is a private system. Authorized access only.
+Unauthorized access is prohibited and may be prosecuted under applicable law.
+All connections are monitored and logged; records may be used as evidence.
 EOF
   cp /etc/issue.net /etc/issue
 
@@ -446,8 +457,23 @@ install dccp /bin/false
 install sctp /bin/false
 install rds /bin/false
 install tipc /bin/false
+blacklist dccp
+blacklist sctp
+blacklist rds
+blacklist tipc
 install usb-storage /bin/false
 EOF
+
+  # login.defs: новые файлы не читаются «всеми» (027), больше раундов хеширования паролей
+  sed -i -E 's/^UMASK[[:space:]]+.*/UMASK\t\t027/' /etc/login.defs
+  grep -q '^SHA_CRYPT_MIN_ROUNDS' /etc/login.defs || printf 'SHA_CRYPT_MIN_ROUNDS 65536\nSHA_CRYPT_MAX_ROUNDS 131072\n' >>/etc/login.defs
+
+  # Учёт процессов (acct) и статистика нагрузки (sysstat) — пригодятся при разборе инцидентов
+  systemctl enable --now acct &>/dev/null || true
+  if [[ -f /etc/default/sysstat ]]; then
+    sed -i 's/^ENABLED=.*/ENABLED="true"/' /etc/default/sysstat
+    systemctl enable --now sysstat &>/dev/null || true
+  fi
 
   # Службы, которые не нужны на сервере
   local svc
@@ -730,7 +756,8 @@ StrictModes yes
 
 # --- Ограничения ---
 MaxAuthTries 3
-MaxSessions 4
+MaxSessions 2
+TCPKeepAlive no
 MaxStartups 10:30:60
 LoginGraceTime 30
 ClientAliveInterval 300

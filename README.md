@@ -50,7 +50,7 @@ sudo NEW_USER=sysop SSH_PORT=42222 GITHUB_KEYS_USER=mygithub EXTRA_PORTS=80,443 
 ## Важно
 
 - **Docker** открывает порты в обход UFW. Публикуй их как `-p 127.0.0.1:8080:80` или используй `ufw-docker`.
-- Для SSH-туннелей (например, к БД) поменяй в `/etc/ssh/sshd_config.d/00-hardening.conf` `AllowTcpForwarding no` на `local`.
+- Для SSH-туннелей и VS Code Remote-SSH поменяй в `/etc/ssh/sshd_config.d/00-hardening.conf` `AllowTcpForwarding no` на `local` (и при необходимости `MaxSessions 2` на `10`), затем `sudo systemctl restart ssh`.
 - Бэкап исходных конфигов: `/root/harden-backup-*`, отчёт: `/root/harden-report.txt`, лог: `/var/log/harden.log`.
 
 ## Сводка при входе на уже настроенный сервер
