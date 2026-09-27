@@ -58,6 +58,29 @@ jobs:
           out=$(bash harden.sh 2>&1 </dev/null) && { echo "::error::ran without root"; exit 1; }
           echo "$out" | grep -q 'Run as root'
 
+      - name: CrowdSec repository — pinned key, only CrowdSec packages
+        # The real function against the real repository, on the release it targets.
+        run: |
+          sudo bash -c 'source ./harden.sh; setup_crowdsec_repo'
+          apt-cache policy crowdsec
+          cand=$(apt-cache policy crowdsec | awk '/Candidate:/{print $2}')
+          apt-cache madison crowdsec | grep "$cand" | grep -q packagecloud.io/crowdsec
+          dpkg --compare-versions "$cand" ge 1.6
+          # A package that exists in that repository but is not on the list must be unreachable
+          apt-cache madison crowdsec-firewall-bouncer-iptables | grep -q packagecloud.io/crowdsec
+          apt-cache policy crowdsec-firewall-bouncer-iptables | grep -q 'Candidate: (none)'
+          sudo apt-get install -s crowdsec crowdsec-firewall-bouncer-nftables \
+            | grep -E '^Inst crowdsec-firewall-bouncer-nftables .*packagecloud'
+
+      - name: CrowdSec repository — a wrong fingerprint is refused
+        run: |
+          sudo rm -f /etc/apt/sources.list.d/crowdsec.list /etc/apt/preferences.d/crowdsec /etc/apt/keyrings/crowdsec.gpg
+          if sudo bash -c 'source ./harden.sh; CROWDSEC_KEY_FPR=0000000000000000000000000000000000000000; setup_crowdsec_repo'; then
+            echo "::error::a key with the wrong fingerprint was accepted"; exit 1
+          fi
+          test ! -e /etc/apt/sources.list.d/crowdsec.list
+          test ! -e /etc/apt/keyrings/crowdsec.gpg
+
       - name: Smoke — server-status runs on the runner
         run: |
           out=$(bash server-status)

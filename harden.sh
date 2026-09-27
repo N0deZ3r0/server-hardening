@@ -756,17 +756,70 @@ HOOK_EOF
           "The summary replaces the stock login greeting. Run it any time: server-status")"
 }
 
+# CrowdSec's apt repository is set up here rather than by piping install.crowdsec.net
+# into sh, so no third-party code runs as root. What is trusted instead is one signing
+# key, and only if its fingerprint matches the one pinned below — cross-checked against
+# packagecloud.io, keyserver.ubuntu.com and keys.openpgp.org, and verified to sign the
+# repository's InRelease. apt is then allowed to take only CrowdSec's own packages from
+# that repository, so even a compromised repository cannot ship a new openssh or sudo.
+CROWDSEC_REPO="https://packagecloud.io/crowdsec/crowdsec/any"
+CROWDSEC_KEY_URL="https://packagecloud.io/crowdsec/crowdsec/gpgkey"
+CROWDSEC_KEY_FPR="6A89E3C2303A901A889971D3376ED5326E93CD0C"
+CROWDSEC_ORIGIN="packagecloud.io/crowdsec/crowdsec"
+
+setup_crowdsec_repo() {
+  local tmp fpr keyring=/etc/apt/keyrings/crowdsec.gpg
+  tmp=$(mktemp -d)
+  if ! curl -fsSL --proto '=https' --tlsv1.2 "$CROWDSEC_KEY_URL" -o "$tmp/key.asc"; then
+    rm -rf "$tmp"
+    warn "$(T "Не удалось скачать ключ CrowdSec" "Could not download the CrowdSec key")"; return 1
+  fi
+  gpg --batch --quiet --homedir "$tmp" --dearmor -o "$tmp/key.gpg" "$tmp/key.asc" 2>/dev/null || true
+  fpr=$(gpg --batch --homedir "$tmp" --show-keys --with-colons "$tmp/key.gpg" 2>/dev/null | awk -F: '/^fpr/{print $10; exit}')
+  if [[ $fpr != "$CROWDSEC_KEY_FPR" ]]; then
+    rm -rf "$tmp"
+    warn "$(T "Отпечаток ключа CrowdSec не совпал (ожидался $CROWDSEC_KEY_FPR, получен ${fpr:-ничего}) — репозиторий не подключён" \
+              "CrowdSec key fingerprint mismatch (expected $CROWDSEC_KEY_FPR, got ${fpr:-nothing}) — repository not added")"
+    return 1
+  fi
+  install -d -m 755 /etc/apt/keyrings
+  install -m 644 "$tmp/key.gpg" "$keyring"
+  rm -rf "$tmp"
+  echo "deb [signed-by=$keyring] $CROWDSEC_REPO any main" >/etc/apt/sources.list.d/crowdsec.list
+  # Specific record first: whichever way apt ranks records, CrowdSec's packages get 500
+  # and everything else from this origin gets -1 (never installed)
+  cat >/etc/apt/preferences.d/crowdsec <<EOF
+# harden.sh: only CrowdSec's own packages may come from its repository
+Package: crowdsec crowdsec-firewall-bouncer-nftables
+Pin: release o=$CROWDSEC_ORIGIN
+Pin-Priority: 500
+
+Package: *
+Pin: release o=$CROWDSEC_ORIGIN
+Pin-Priority: -1
+EOF
+  if ! apt-get -o DPkg::Lock::Timeout=600 update -q; then
+    rm -f /etc/apt/sources.list.d/crowdsec.list /etc/apt/preferences.d/crowdsec "$keyring"
+    warn "$(T "apt update с репозиторием CrowdSec не прошёл — репозиторий убран" "apt update with the CrowdSec repository failed — repository removed")"
+    return 1
+  fi
+  ok "$(T "Репозиторий CrowdSec подключён (ключ $CROWDSEC_KEY_FPR проверен)" "CrowdSec repository added (key $CROWDSEC_KEY_FPR verified)")"
+}
+
 setup_crowdsec() {
   [[ $INSTALL_CROWDSEC == yes ]] || return 0
   step "CrowdSec"
-  if curl -fsSL https://install.crowdsec.net | sh; then
-    local apt_opts=(-y -o DPkg::Lock::Timeout=600)
-    # Engine first (it creates /etc/crowdsec/config.yaml), then the bouncer — installed
-    # together, apt may configure the bouncer first and it fails without config.yaml
-    apt-get "${apt_opts[@]}" install crowdsec
-    if [[ -n $ADMIN_IP ]]; then
-      mkdir -p /etc/crowdsec/parsers/s02-enrich
-      cat >/etc/crowdsec/parsers/s02-enrich/99-harden-admin-whitelist.yaml <<EOF
+  if ! setup_crowdsec_repo; then
+    warn "$(T "CrowdSec пропущен, fail2ban защищает SSH и без него" "CrowdSec skipped; fail2ban protects SSH without it")"
+    return 0
+  fi
+  local apt_opts=(-y -o DPkg::Lock::Timeout=600)
+  # Engine first (it creates /etc/crowdsec/config.yaml), then the bouncer — installed
+  # together, apt may configure the bouncer first and it fails without config.yaml
+  apt-get "${apt_opts[@]}" install crowdsec
+  if [[ -n $ADMIN_IP ]]; then
+    mkdir -p /etc/crowdsec/parsers/s02-enrich
+    cat >/etc/crowdsec/parsers/s02-enrich/99-harden-admin-whitelist.yaml <<EOF
 name: harden/admin-whitelist
 description: "Admin IP whitelisted by harden.sh"
 whitelist:
@@ -774,18 +827,19 @@ whitelist:
   ip:
     - "$ADMIN_IP"
 EOF
-    fi
-    cscli collections install crowdsecurity/linux crowdsecurity/sshd >/dev/null 2>&1 || true
-    systemctl restart crowdsec
-    apt-get "${apt_opts[@]}" install crowdsec-firewall-bouncer-nftables
-    if systemctl is-active --quiet crowdsec && systemctl is-active --quiet crowdsec-firewall-bouncer; then
-      ok "$(T "CrowdSec и bouncer работают (cscli decisions list)" "CrowdSec and bouncer running (cscli decisions list)")"
-    else
-      warn "$(T "CrowdSec установлен, но не всё запущено: systemctl status crowdsec crowdsec-firewall-bouncer" \
-                "CrowdSec installed but not everything runs: systemctl status crowdsec crowdsec-firewall-bouncer")"
-    fi
+  fi
+  cscli collections install crowdsecurity/linux crowdsecurity/sshd >/dev/null 2>&1 || true
+  systemctl restart crowdsec
+  apt-get "${apt_opts[@]}" install crowdsec-firewall-bouncer-nftables
+  # CrowdSec's own security fixes arrive the same way as the system's
+  cat >/etc/apt/apt.conf.d/53-hardening-crowdsec <<EOF
+Unattended-Upgrade::Origins-Pattern { "origin=$CROWDSEC_ORIGIN"; };
+EOF
+  if systemctl is-active --quiet crowdsec && systemctl is-active --quiet crowdsec-firewall-bouncer; then
+    ok "$(T "CrowdSec и bouncer работают (cscli decisions list)" "CrowdSec and bouncer running (cscli decisions list)")"
   else
-    warn "$(T "Не удалось подключить репозиторий CrowdSec — пропускаю" "Could not add the CrowdSec repository — skipped")"
+    warn "$(T "CrowdSec установлен, но не всё запущено: systemctl status crowdsec crowdsec-firewall-bouncer" \
+              "CrowdSec installed but not everything runs: systemctl status crowdsec crowdsec-firewall-bouncer")"
   fi
 }
 
@@ -1061,4 +1115,5 @@ main() {
   rm -f "$PUBKEY_FILE"
 }
 
-main "$@"
+# Run unless sourced (CI sources the file to test single functions on a runner)
+if [[ ${BASH_SOURCE[0]:-$0} == "$0" ]]; then main "$@"; fi

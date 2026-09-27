@@ -30,11 +30,11 @@ In scope:
   login was confirmed, a rollback that does not restore access, accounts locked too early
 - A setting that is weaker than the README says, or that does not survive a reboot
 - A file written with permissions that expose secrets (keys, the report, sudoers, logs)
-- Anything the script downloads or executes that could be swapped by a third party beyond
-  what the README already names
+- Anything the script downloads or executes that could be swapped by a third party — in
+  particular a way to get a package other than CrowdSec's from its repository
 
 Out of scope — the **Limits** section of the README: Docker bypassing UFW, the trust given
-to a whitelisted IP, the CrowdSec install script, and the Lynis suggestions left alone on
+to a whitelisted IP, trust in CrowdSec's signing key, and the Lynis suggestions left alone on
 purpose. A measurement showing one of them is worse than described is in scope.
 
 Also out of scope: an attacker who already has your private key or root on the server,
@@ -72,11 +72,11 @@ and the hosting provider itself.
   подтверждения входа, откат не возвращает доступ, аккаунты заблокированы слишком рано
 - Настройка, которая слабее описанной в README или не переживает перезагрузку
 - Файл, записанный с правами, раскрывающими секреты (ключи, отчёт, sudoers, логи)
-- Всё, что скрипт скачивает или запускает и что может подменить третья сторона, сверх
-  того, что уже названо в README
+- Всё, что скрипт скачивает или запускает и что может подменить третья сторона, — в
+  частности, способ поставить из репозитория CrowdSec что-то кроме его пакетов
 
 Вне области — раздел **Ограничения** в README: Docker в обход UFW, доверие к IP из белого
-списка, установочный скрипт CrowdSec и советы Lynis, не принятые намеренно. Измерение,
+списка, доверие к ключу подписи CrowdSec и советы Lynis, не принятые намеренно. Измерение,
 показывающее, что что-то из этого хуже описанного, — в области действия.
 
 Также вне области — нападающий, у которого уже есть ваш закрытый ключ или root на

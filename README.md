@@ -206,8 +206,13 @@ Knowingly open, with the reason for each:
 - **The whitelisted IP is trusted** by fail2ban, CrowdSec and the rate limit. If your IP
   is dynamic, whoever holds it next gets that too — they still need your key.
 - **The provider's web console** needs the new user's password once root is locked.
-- **CrowdSec** is installed from its own repository through `install.crowdsec.net`, which
-  means trusting that script.
+- **CrowdSec comes from its vendor's repository**, which means trusting its signing key.
+  No vendor script is run: the script adds the repository itself, accepts the key only if
+  its fingerprint is `6A89E3C2 303A901A 889971D3 376ED532 6E93CD0C` (checked against
+  packagecloud.io, keyserver.ubuntu.com and keys.openpgp.org), and pins apt so that only
+  `crowdsec` and `crowdsec-firewall-bouncer-nftables` can come from there — a compromised
+  repository still cannot ship a new openssh or sudo. If the vendor rotates the key,
+  CrowdSec is skipped until the fingerprint here is updated; CI checks it on every push.
 - **USB storage is disabled** — irrelevant on a VPS, noticeable on bare metal.
 - **Lynis suggestions left alone:** separate `/home` `/tmp` `/var` partitions (only
   possible at install time), a GRUB password (gets in the way of the provider console),
