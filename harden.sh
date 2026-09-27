@@ -14,12 +14,16 @@
 #    5. Firewall UFW (deny incoming) + fail2ban (+ CrowdSec по желанию)
 #    6. SSH: новый порт, только ключи, root запрещён, современная криптография
 #       -> ПРОВЕРКА входа в новом окне, только потом старый порт закрывается
-#    7. Блокирует пароль root, запускает аудит Lynis, пишет отчёт
+#    7. Блокирует пароль root и чужие аккаунты (ubuntu/debian от cloud-init),
+#       запускает аудит Lynis, пишет отчёт, предлагает перезагрузку
 #
 #  Переменные окружения (необязательно, иначе скрипт спросит):
 #    NEW_USER, SSH_PORT, SSH_PUBKEY, GITHUB_KEYS_USER, EXTRA_PORTS="80,443",
 #    AUTO_REBOOT=yes|no, REBOOT_TIME=04:00, LOCK_ROOT=yes|no,
-#    INSTALL_CROWDSEC=yes|no, RUN_LYNIS=yes|no
+#    LOCK_OTHER_USERS=yes|no, INSTALL_CROWDSEC=yes|no, RUN_LYNIS=yes|no,
+#    REBOOT_NOW=yes|no,
+#    SET_USER_PASSWORD=no  — не задавать пароль пользователю сейчас
+#                            (тогда root НЕ блокируется, пароль задашь позже: passwd <user>)
 # =============================================================================
 set -Eeuo pipefail
 
@@ -84,6 +88,12 @@ preflight() {
   echo "${C_BOLD}Server hardening v$VERSION — $OS_NAME (virt: $VIRT)${C_0}"
   if [[ -z ${TMUX:-} && -z ${STY:-} ]]; then
     warn "Совет: запускай внутри tmux/screen, чтобы обрыв SSH не прервал настройку."
+  fi
+
+  # На свежем VPS первые минуты работают cloud-init и автообновления
+  if command -v cloud-init >/dev/null; then
+    info "Жду завершения cloud-init..."
+    timeout 600 cloud-init status --wait >/dev/null 2>&1 || true
   fi
 
   # Текущие порты SSH (чтобы не отрезать себя до проверки)
@@ -151,6 +161,15 @@ collect_answers() {
   else AUTO_REBOOT=no; fi
 
   if env_yn LOCK_ROOT "Заблокировать пароль root (вход только через $NEW_USER + sudo)?" y; then LOCK_ROOT=yes; else LOCK_ROOT=no; fi
+
+  # Другие аккаунты с входом (ubuntu, debian, admin от хостера и т.п.)
+  OTHER_USERS=$(awk -F: -v me="$NEW_USER" '$3>=1000 && $3<60000 && $1!=me && $7!~/(nologin|false)$/ {print $1}' /etc/passwd | xargs)
+  if [[ -n $OTHER_USERS ]]; then
+    warn "Найдены другие аккаунты с доступом к shell: $OTHER_USERS"
+    if env_yn LOCK_OTHER_USERS "Заблокировать их (пароль, shell, sudo; данные не удаляются)?" y; then LOCK_OTHER_USERS=yes; else LOCK_OTHER_USERS=no; fi
+  else
+    LOCK_OTHER_USERS=no
+  fi
   if env_yn INSTALL_CROWDSEC "Установить CrowdSec (коллективный IPS, дополнение к fail2ban)?" n; then INSTALL_CROWDSEC=yes; else INSTALL_CROWDSEC=no; fi
   if env_yn RUN_LYNIS "Запустить в конце аудит Lynis?" y; then RUN_LYNIS=yes; else RUN_LYNIS=no; fi
 
@@ -162,6 +181,7 @@ collect_answers() {
   echo "  Открытые порты:     $SSH_PORT/tcp ${EXTRA_PORTS:+$EXTRA_PORTS}"
   echo "  Автоперезагрузка:   $AUTO_REBOOT ${REBOOT_TIME:-}"
   echo "  Блок. пароля root:  $LOCK_ROOT"
+  [[ -n $OTHER_USERS ]] && echo "  Блок. аккаунтов:    $LOCK_OTHER_USERS ($OTHER_USERS)"
   echo "  CrowdSec:           $INSTALL_CROWDSEC"
   ask_yn "Начать настройку?" y || die "Отменено."
 }
@@ -173,11 +193,11 @@ check_pubkeys() {  # файл с ключами валиден?
   grep -E '^(ssh-ed25519|sk-ssh-ed25519@openssh.com|ssh-rsa|ecdsa-sha2-nistp(256|384|521)|sk-ecdsa-sha2-nistp256@openssh.com) ' "$f" >"$f.clean" || { rm -f "$f.clean"; warn "Ключи не найдены"; return 1; }
   mv "$f.clean" "$f"
   if ! ssh-keygen -lf "$f" >/dev/null 2>&1; then warn "Ключ повреждён"; return 1; fi
-  while read -r bits _ _ type; do
+  while read -r bits type; do
     if [[ $type == "(RSA)" ]] && (( bits < 3072 )); then
       warn "RSA-ключ $bits бит слабый. Рекомендуется ed25519: ssh-keygen -t ed25519"
     fi
-  done < <(ssh-keygen -lf "$f")
+  done < <(ssh-keygen -lf "$f" | awk '{print $1, $NF}')
   return 0
 }
 
@@ -185,8 +205,9 @@ check_pubkeys() {  # файл с ключами валиден?
 install_packages() {
   step "Обновление системы и установка пакетов"
   export DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a
-  local apt_opts=(-y -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold)
-  apt-get update -q
+  # Lock::Timeout — ждать, если apt занят автообновлением (частое на свежем VPS)
+  local apt_opts=(-y -o DPkg::Lock::Timeout=600 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold)
+  apt-get -o DPkg::Lock::Timeout=600 update -q
   apt-get "${apt_opts[@]}" full-upgrade
   local pkgs=(
     ufw fail2ban python3-systemd
@@ -198,7 +219,7 @@ install_packages() {
   )
   [[ $IS_CONTAINER == no ]] && pkgs+=(auditd audispd-plugins)
   apt-get "${apt_opts[@]}" install "${pkgs[@]}"
-  apt-get -y autoremove --purge
+  apt-get "${apt_opts[@]}" autoremove --purge
   ok "Пакеты установлены"
 }
 
@@ -233,11 +254,15 @@ EOF
   chown "$NEW_USER:$NEW_USER" "$ak"; chmod 600 "$ak"
   ok "Ключ добавлен в $ak"
 
+  USER_HAS_PASSWORD=no
   if passwd -S "$NEW_USER" | awk '{exit !($2=="P")}'; then
-    info "Пароль уже задан"
+    info "Пароль уже задан"; USER_HAS_PASSWORD=yes
+  elif [[ ${SET_USER_PASSWORD:-yes} == no ]]; then
+    warn "Пароль для $NEW_USER не задан (SET_USER_PASSWORD=no) — sudo заработает после: passwd $NEW_USER"
   else
     echo "Задай пароль для $NEW_USER — он нужен для sudo (минимум 12 символов, 3 типа символов)."
     until passwd "$NEW_USER" </dev/tty >/dev/tty 2>&1; do warn "Попробуй ещё раз"; done
+    USER_HAS_PASSWORD=yes
   fi
 
   # Логи всех sudo-команд + таймаут
@@ -250,6 +275,25 @@ EOF
   chmod 440 /etc/sudoers.d/99-hardening
   visudo -cq || { rm -f /etc/sudoers.d/99-hardening; die "Ошибка sudoers"; }
   ok "Пользователь готов"
+}
+
+lock_other_users() {
+  [[ $LOCK_OTHER_USERS == yes ]] || return 0
+  step "Блокировка лишних аккаунтов: $OTHER_USERS"
+  local u f g
+  for u in $OTHER_USERS; do
+    usermod -L -s /usr/sbin/nologin "$u"
+    for g in sudo adm lxd docker; do gpasswd -d "$u" "$g" &>/dev/null || true; done
+    [[ -f /home/$u/.ssh/authorized_keys ]] && mv "/home/$u/.ssh/authorized_keys" "$BACKUP_DIR/authorized_keys.$u"
+    # cloud-init выдаёт ubuntu/debian "NOPASSWD:ALL" — отключаем
+    for f in /etc/sudoers.d/*; do
+      [[ -f $f ]] && grep -qE "^${u}[[:space:]]" "$f" || continue
+      cp -a "$f" "$BACKUP_DIR/"
+      sed -i -E "s/^(${u}[[:space:]].*)/# disabled by harden.sh: \1/" "$f"
+    done
+    ok "$u заблокирован (вернуть: usermod -U -s /bin/bash $u)"
+  done
+  visudo -cq || die "Ошибка sudoers после блокировки пользователей — см. $BACKUP_DIR"
 }
 
 # ---------- 4. система ----------
@@ -338,6 +382,12 @@ install tipc /bin/false
 install usb-storage /bin/false
 EOF
 
+  # Службы, которые не нужны на сервере
+  local svc
+  for svc in ModemManager udisks2; do
+    systemctl list-unit-files "$svc.service" &>/dev/null && systemctl disable --now "$svc.service" &>/dev/null && info "Отключена служба $svc" || true
+  done
+
   # Права на важные файлы
   chmod 600 /etc/crontab 2>/dev/null || true
   chmod 700 /etc/cron.d /etc/cron.daily /etc/cron.hourly /etc/cron.weekly /etc/cron.monthly 2>/dev/null || true
@@ -406,7 +456,7 @@ EOF
 # ---------- 5. firewall ----------
 setup_firewall() {
   step "Firewall (UFW)"
-  ufw --force reset >/dev/null
+  # Без reset — при повторном запуске уже добавленные правила сохраняются
   ufw default deny incoming
   ufw default allow outgoing
   ufw default deny routed
@@ -598,10 +648,12 @@ setup_ssh() {
   echo "╚════════════════════════════════════════════════════════════╝${C_0}"
   echo
   echo "     ssh -p $SSH_PORT $NEW_USER@$ip"
-  echo "     sudo -v        # проверить, что sudo работает (введи пароль)"
+  if [[ $USER_HAS_PASSWORD == yes ]]; then
+    echo "     sudo -v        # проверить, что sudo работает (введи пароль)"
+  fi
   echo
   local tries=0
-  until ask_yn "Вход по ключу на порт $SSH_PORT и sudo работают?" n; do
+  until ask_yn "Вход по ключу на порт $SSH_PORT работает?" n; do
     tries=$((tries+1))
     if (( tries >= 3 )) || ! ask_yn "Попробовать ещё раз? (нет = откатить SSH)" y; then
       rollback_ssh
@@ -624,6 +676,12 @@ setup_ssh() {
 lock_root() {
   [[ $LOCK_ROOT == yes ]] || return 0
   step "Блокировка root"
+  if [[ $USER_HAS_PASSWORD != yes ]]; then
+    warn "У $NEW_USER нет пароля — root НЕ блокирую, иначе sudo будет недоступен."
+    warn "Задай пароль (passwd $NEW_USER), затем: sudo passwd -l root"
+    LOCK_ROOT="no (у $NEW_USER нет пароля)"
+    return 0
+  fi
   passwd -l root >/dev/null
   # Ключи root больше не нужны (вход root по SSH запрещён) — сохраняем копию
   if [[ -s /root/.ssh/authorized_keys ]]; then
@@ -668,10 +726,16 @@ final_report() {
   echo "  sudo fail2ban-client status sshd — забаненные IP"
   echo "  sudo ausearch -k identity -i    — кто менял пользователей"
   echo "  sudo lynis audit system         — полный аудит"
-  if [[ -f /var/run/reboot-required ]]; then
-    warn "Нужна перезагрузка (обновилось ядро): sudo reboot"
-  fi
   warn "Docker публикует порты в обход UFW! Используй -p 127.0.0.1:PORT:PORT или ufw-docker."
+  if [[ -f /var/run/reboot-required ]]; then
+    echo
+    warn "Нужна перезагрузка: установлено новое ядро ($(uname -r) -> $(ls -1 /boot/vmlinuz-* | sort -V | tail -1 | sed 's|.*/vmlinuz-||'))"
+    if env_yn REBOOT_NOW "Перезагрузить сейчас? (после — входи: ssh -p $SSH_PORT $NEW_USER@<IP>)" y; then
+      info "Перезагрузка через 5 секунд..."
+      rm -f "$PUBKEY_FILE"
+      systemd-run --on-active=5 --unit=harden-reboot systemctl reboot >/dev/null
+    fi
+  fi
 }
 
 main() {
@@ -679,6 +743,7 @@ main() {
   collect_answers
   install_packages
   setup_user
+  lock_other_users
   harden_system
   setup_auditd
   setup_autoupdates
