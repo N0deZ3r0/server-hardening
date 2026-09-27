@@ -43,7 +43,7 @@ apt install -y tmux && tmux
 ## Без вопросов (через переменные окружения)
 
 ```bash
-sudo NEW_USER=admin SSH_PORT=42222 GITHUB_KEYS_USER=mygithub EXTRA_PORTS=80,443 \
+sudo NEW_USER=sysop SSH_PORT=42222 GITHUB_KEYS_USER=mygithub EXTRA_PORTS=80,443 \
      AUTO_REBOOT=yes LOCK_ROOT=yes INSTALL_CROWDSEC=no RUN_LYNIS=yes bash harden.sh
 ```
 

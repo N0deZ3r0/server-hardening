@@ -102,7 +102,15 @@ preflight() {
 }
 
 # ---------- 1. вопросы ----------
-valid_user() { [[ $1 =~ ^[a-z_][a-z0-9_-]{0,31}$ && $1 != root ]]; }
+valid_user() {
+  [[ $1 =~ ^[a-z_][a-z0-9_-]{0,31}$ && $1 != root ]] || { warn "Только латиница в нижнем регистре, цифры, _ и -"; return 1; }
+  if id "$1" &>/dev/null; then
+    (( $(id -u "$1") >= 1000 )) || { warn "'$1' — системный пользователь, выбери другое имя"; return 1; }
+  elif getent group "$1" >/dev/null; then
+    # На Ubuntu есть системная группа admin — adduser с таким именем падает
+    warn "Имя '$1' занято системной группой, выбери другое"; return 1
+  fi
+}
 
 port_busy() { ss -Hltn "sport = :$1" 2>/dev/null | grep -q .; }
 
@@ -112,8 +120,7 @@ collect_answers() {
   # Пользователь
   NEW_USER=${NEW_USER:-}
   until [[ -n $NEW_USER ]] && valid_user "$NEW_USER"; do
-    [[ -n $NEW_USER ]] && warn "Недопустимое имя. Латиница в нижнем регистре, цифры, _ и -."
-    ask "Имя нового пользователя с sudo" "admin"; NEW_USER=$REPLY
+    ask "Имя нового пользователя с sudo" "sysop"; NEW_USER=$REPLY
   done
 
   # SSH-ключ
