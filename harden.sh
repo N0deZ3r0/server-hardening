@@ -675,13 +675,32 @@ if [ -n "${SSH_CONNECTION:-}" ] && [ -z "${TMUX:-}" ] && [ -z "${SERVER_STATUS_S
 fi
 HOOK_EOF
 
-  # Убрать шум Ubuntu при входе (реклама из интернета, справка, дубль системной информации)
-  local f
-  for f in 10-help-text 50-motd-news 50-landscape-sysinfo; do
-    [[ -f /etc/update-motd.d/$f ]] && chmod -x "/etc/update-motd.d/$f"
+  # Убрать всё стандартное приветствие (Welcome, ESM, реклама, legal) — сводка его заменяет.
+  # dpkg-statoverride, а не правка файлов: права переживут обновления пакетов, а изменённые
+  # конфиги заставили бы unattended-upgrades пропускать обновления openssh/bash.
+  local f real u home
+  for f in /etc/update-motd.d/*; do
+    [[ -e $f ]] || continue
+    real=$(readlink -f "$f")
+    if dpkg -S "$real" &>/dev/null; then
+      dpkg-statoverride --list "$real" &>/dev/null || dpkg-statoverride --update --add root root 0644 "$real"
+    else
+      chmod -x "$real"
+    fi
   done
   [[ -f /etc/default/motd-news ]] && sed -i 's/^ENABLED=.*/ENABLED=0/' /etc/default/motd-news
-  ok "Сводка будет показываться при входе. Вручную: server-status"
+  # Debian: статический /etc/motd с текстом про лицензию
+  grep -qs 'ABSOLUTELY NO WARRANTY' /etc/motd && : >/etc/motd
+  # Одноразовые подсказки Ubuntu («free software…», «To run a command as administrator…»)
+  mkdir -p /etc/skel/.cache
+  touch /etc/skel/.sudo_as_admin_successful /etc/skel/.cache/motd.legal-displayed
+  while IFS=: read -r u _ _ _ _ home _; do
+    [[ -d $home && $home == /home/* ]] || continue
+    [[ -d $home/.cache ]] || install -d -m 700 -o "$u" -g "$(id -gn "$u")" "$home/.cache"
+    install -o "$u" -g "$(id -gn "$u")" -m 644 /dev/null "$home/.sudo_as_admin_successful"
+    install -o "$u" -g "$(id -gn "$u")" -m 644 /dev/null "$home/.cache/motd.legal-displayed"
+  done < <(awk -F: '$3>=1000 && $3<60000' /etc/passwd)
+  ok "Сводка будет показываться при входе вместо стандартного приветствия. Вручную: server-status"
 }
 
 setup_crowdsec() {
