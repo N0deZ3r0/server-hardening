@@ -21,7 +21,7 @@
 #    NEW_USER, SSH_PORT, SSH_PUBKEY, GITHUB_KEYS_USER, EXTRA_PORTS="80,443",
 #    AUTO_REBOOT=yes|no, REBOOT_TIME=04:00, LOCK_ROOT=yes|no,
 #    LOCK_OTHER_USERS=yes|no, INSTALL_CROWDSEC=yes|no, RUN_LYNIS=yes|no,
-#    REBOOT_NOW=yes|no,
+#    REBOOT_NOW=yes|no, ADMIN_IP=1.2.3.4 (белый список; пусто — не добавлять),
 #    SET_USER_PASSWORD=no  — не задавать пароль пользователю сейчас
 #                            (тогда root НЕ блокируется, пароль задашь позже: passwd <user>)
 # =============================================================================
@@ -102,6 +102,21 @@ preflight() {
 }
 
 # ---------- 1. вопросы ----------
+detect_admin_ip() {  # IP, с которого сейчас подключён администратор
+  local sc=${SSH_CLIENT:-} ip filter="" p
+  ip=${sc%% *}
+  if [[ -z $ip ]]; then
+    ip=$(who -m 2>/dev/null | grep -oE '\(([0-9]{1,3}\.){3}[0-9]{1,3}\)' | tr -d '()' || true)
+  fi
+  if [[ -z $ip ]]; then  # sudo/tmux потеряли SSH_CLIENT — смотрим активные SSH-соединения
+    for p in $CURRENT_SSH_PORTS; do filter+="${filter:+ or }sport = :$p"; done
+    ip=$(ss -Htn state established "( $filter )" 2>/dev/null | awk '{print $4}' \
+         | sed -E 's/:[0-9]+$//; s/^\[//; s/\]$//; s/^::ffff://' | sort -u || true)
+    [[ $(wc -l <<<"$ip") -eq 1 ]] || ip=""
+  fi
+  echo "$ip"
+}
+
 valid_user() {
   [[ $1 =~ ^[a-z_][a-z0-9_-]{0,31}$ && $1 != root ]] || { warn "Только латиница в нижнем регистре, цифры, _ и -"; return 1; }
   if id "$1" &>/dev/null; then
@@ -162,6 +177,20 @@ collect_answers() {
   fi
   EXTRA_PORTS=$(tr -d ' ' <<<"$EXTRA_PORTS")
 
+  # IP администратора — в белый список, чтобы fail2ban/CrowdSec не забанили тебя самого
+  local detected
+  detected=$(detect_admin_ip)
+  if [[ -n ${ADMIN_IP+x} ]]; then
+    :  # задан через окружение (пусто = не добавлять)
+  elif [[ -n $detected ]]; then
+    if ask_yn "Твой IP $detected — добавить в белый список fail2ban/CrowdSec? (не стоит, если IP часто меняется)" y; then
+      ADMIN_IP=$detected
+    else ADMIN_IP=""; fi
+  else
+    ADMIN_IP=""
+  fi
+  if [[ -n $ADMIN_IP && ! $ADMIN_IP =~ ^[0-9a-fA-F.:/]+$ ]]; then warn "Неверный ADMIN_IP: $ADMIN_IP — пропускаю"; ADMIN_IP=""; fi
+
   # Автоперезагрузка после обновлений ядра
   if env_yn AUTO_REBOOT "Разрешить автоперезагрузку ночью, если обновление ядра этого требует?" y; then
     AUTO_REBOOT=yes; REBOOT_TIME=${REBOOT_TIME:-04:00}
@@ -186,6 +215,7 @@ collect_answers() {
   echo "  SSH-ключи:          $(ssh-keygen -lf "$PUBKEY_FILE" | awk '{print $NF, $2}' | paste -sd';' -)"
   echo "  SSH порт:           $CURRENT_SSH_PORTS -> $SSH_PORT"
   echo "  Открытые порты:     $SSH_PORT/tcp ${EXTRA_PORTS:+$EXTRA_PORTS}"
+  echo "  Белый список IP:    ${ADMIN_IP:-нет}"
   echo "  Автоперезагрузка:   $AUTO_REBOOT ${REBOOT_TIME:-}"
   echo "  Блок. пароля root:  $LOCK_ROOT"
   [[ -n $OTHER_USERS ]] && echo "  Блок. аккаунтов:    $LOCK_OTHER_USERS ($OTHER_USERS)"
@@ -469,6 +499,8 @@ setup_firewall() {
   ufw default deny routed
   local p
   for p in $CURRENT_SSH_PORTS; do ufw allow "$p/tcp" comment 'SSH (temporary)' >/dev/null; done
+  # Админ — без rate-limit (правило раньше limit, UFW применяет первое совпавшее)
+  [[ -n $ADMIN_IP ]] && ufw allow from "$ADMIN_IP" to any port "$SSH_PORT" proto tcp comment 'SSH admin' >/dev/null
   ufw limit "$SSH_PORT/tcp" comment 'SSH' >/dev/null
   IFS=',' read -ra ports <<<"$EXTRA_PORTS"
   for p in "${ports[@]}"; do
@@ -491,7 +523,7 @@ bantime.factor     = 2
 bantime.maxtime    = 4w
 findtime           = 10m
 maxretry           = 4
-ignoreip           = 127.0.0.1/8 ::1
+ignoreip           = 127.0.0.1/8 ::1 ${ADMIN_IP}
 banaction          = ufw
 
 [sshd]
@@ -516,10 +548,29 @@ setup_crowdsec() {
   [[ $INSTALL_CROWDSEC == yes ]] || return 0
   step "CrowdSec"
   if curl -fsSL https://install.crowdsec.net | sh; then
-    apt-get install -y crowdsec crowdsec-firewall-bouncer-nftables
+    local apt_opts=(-y -o DPkg::Lock::Timeout=600)
+    # Сначала движок (создаёт /etc/crowdsec/config.yaml), потом bouncer —
+    # в одной команде apt может настроить bouncer раньше и он падает без config.yaml
+    apt-get "${apt_opts[@]}" install crowdsec
+    if [[ -n $ADMIN_IP ]]; then
+      mkdir -p /etc/crowdsec/parsers/s02-enrich
+      cat >/etc/crowdsec/parsers/s02-enrich/99-harden-admin-whitelist.yaml <<EOF
+name: harden/admin-whitelist
+description: "Admin IP whitelisted by harden.sh"
+whitelist:
+  reason: "admin ip (harden.sh)"
+  ip:
+    - "$ADMIN_IP"
+EOF
+    fi
     cscli collections install crowdsecurity/linux crowdsecurity/sshd >/dev/null 2>&1 || true
     systemctl restart crowdsec
-    ok "CrowdSec установлен (cscli decisions list)"
+    apt-get "${apt_opts[@]}" install crowdsec-firewall-bouncer-nftables
+    if systemctl is-active --quiet crowdsec && systemctl is-active --quiet crowdsec-firewall-bouncer; then
+      ok "CrowdSec и bouncer работают (cscli decisions list)"
+    else
+      warn "CrowdSec установлен, но не всё запущено: systemctl status crowdsec crowdsec-firewall-bouncer"
+    fi
   else
     warn "Не удалось подключить репозиторий CrowdSec — пропускаю"
   fi
