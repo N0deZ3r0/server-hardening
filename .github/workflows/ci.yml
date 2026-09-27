@@ -40,14 +40,17 @@ jobs:
       - name: ShellCheck — harden.sh
         run: shellcheck --version && shellcheck -S warning harden.sh
 
-      - name: ShellCheck — embedded server-status
-        # The login summary is written out from a heredoc, so it is not a file
-        # ShellCheck would ever see on its own.
+      - name: ShellCheck — embedded scripts
+        # The login summary and the alert helpers are written out from heredocs, so they
+        # are not files ShellCheck would ever see on its own.
         run: |
-          awk '/<<.STATUS_EOF.$/{f=1;next} /^STATUS_EOF$/{f=0} f' harden.sh > server-status
-          test -s server-status
-          bash -n server-status
-          shellcheck -S warning -s bash server-status
+          for m in STATUS NOTIFY WATCH REPORT; do
+            awk "/<<.${m}_EOF.\$/{f=1;next} /^${m}_EOF\$/{f=0} f" harden.sh > "embedded-$m"
+            test -s "embedded-$m"
+            bash -n "embedded-$m"
+            shellcheck -S warning -s bash "embedded-$m"
+          done
+          cp embedded-STATUS server-status
           awk '/<<.HOOK_EOF.$/{f=1;next} /^HOOK_EOF$/{f=0} f' harden.sh > hook.sh
           test -s hook.sh
           sh -n hook.sh
@@ -55,8 +58,68 @@ jobs:
       - name: Smoke — help, and refusal without root
         run: |
           bash harden.sh --help | grep -q 'install-status'
+          bash harden.sh --help | grep -q -- '--check'
           out=$(bash harden.sh 2>&1 </dev/null) && { echo "::error::ran without root"; exit 1; }
           echo "$out" | grep -q 'Run as root'
+
+      - name: --check runs to the end and fails an unhardened runner
+        # Under set -e any unguarded failing probe would abort before the summary line.
+        run: |
+          set +e
+          out=$(sudo HARDEN_LANG=en bash harden.sh --check 2>&1); rc=$?
+          set -e
+          echo "$out"
+          echo "$out" | grep -q 'Summary:'
+          test "$rc" = 1
+          out=$(sudo HARDEN_LANG=ru bash harden.sh --check 2>&1) || true
+          echo "$out" | grep -q 'Итог:'
+
+      - name: Telegram alerts against a fake Bot API
+        # A local stand-in for api.telegram.org records what would have been sent.
+        run: |
+          set -x
+          cat > fake_tg.py <<'EOF'
+          import http.server, json
+          class H(http.server.BaseHTTPRequestHandler):
+              def do_POST(self):
+                  n = int(self.headers.get('Content-Length', 0))
+                  body = self.rfile.read(n).decode()
+                  with open('tg.log', 'a') as f:
+                      f.write(self.path + ' ' + body + '\n')
+                  out = json.dumps({'ok': True, 'result': {'username': 'cibot'}}).encode()
+                  self.send_response(200)
+                  self.send_header('Content-Type', 'application/json')
+                  self.send_header('Content-Length', str(len(out)))
+                  self.end_headers()
+                  self.wfile.write(out)
+              do_GET = do_POST
+              def log_message(self, *a):
+                  pass
+          http.server.HTTPServer(('127.0.0.1', 18080), H).serve_forever()
+          EOF
+          python3 fake_tg.py &
+          for _ in $(seq 20); do ss -Hltn 'sport = :18080' | grep -q . && break; sleep 0.5; done
+          token=123456:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij
+          sudo bash -c "source ./harden.sh; TELEGRAM=yes; TG_TOKEN=$token; TG_CHAT_ID=42; HARDEN_TG_API=http://127.0.0.1:18080; install_notifications"
+          # Stored for root only, and never baked into a script or unit
+          sudo stat -c '%a %U' /etc/harden/telegram.conf | grep -q '^600 root'
+          if sudo grep -rq "$token" /usr/local/sbin /etc/systemd/system; then echo "::error::token found in a script or unit"; exit 1; fi
+          grep -q "/bot$token/sendMessage" tg.log
+          grep -q 'chat_id=42' tg.log
+          sudo /usr/local/sbin/harden-notify "ci hello"
+          grep -q 'ci%20hello' tg.log
+          sudo /usr/local/sbin/harden-daily-report
+          grep -q 'Daily%20report' tg.log
+          # Every SSH login is reported, read from the journal
+          systemctl is-active harden-login-watch
+          sleep 2
+          logger -t sshd "Accepted publickey for alex from 203.0.113.9 port 5555 ssh2: ED25519 SHA256:ci"
+          for _ in $(seq 20); do grep -q '203.0.113.9' tg.log && break; sleep 1; done
+          grep '203.0.113.9' tg.log
+          # Failure alerts are wired to the services that matter
+          systemctl show ssh.service -p OnFailure | grep -q 'harden-alert@ssh.service'
+          systemctl list-timers --all --no-pager | grep -q harden-daily-report
+          cat tg.log
 
       - name: detect_admin_ip reads the peer column of ss
         # With a state filter ss drops the State column, so $3 is local and $4 is the peer.

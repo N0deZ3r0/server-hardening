@@ -23,7 +23,10 @@
 #    REBOOT_TIME=04:00, LOCK_ROOT=yes|no, LOCK_OTHER_USERS=yes|no,
 #    INSTALL_CROWDSEC=yes|no, RUN_LYNIS=yes|no, REBOOT_NOW=yes|no,
 #    SERVER_STATUS=yes|no, REUSE_USER=yes|no (use an existing account),
+#    TELEGRAM=yes|no, TG_TOKEN, TG_CHAT_ID, TG_REPORT_TIME=09:00,
 #    SET_USER_PASSWORD=no (root is then NOT locked)
+#
+#  Other modes: --check (audit only), --setup-telegram, --install-status, --help
 # =============================================================================
 set -Eeuo pipefail
 
@@ -75,8 +78,13 @@ usage() {
 harden.sh — Debian/Ubuntu server hardening
 
   sudo bash harden.sh                   full interactive setup
+  sudo bash harden.sh --check           audit this server, change nothing (exit 1 on ✗)
+  sudo bash harden.sh --setup-telegram  add Telegram alerts to a hardened server
   sudo bash harden.sh --install-status  only install the login summary (server-status)
   sudo HARDEN_LANG=ru bash harden.sh    interface in Russian / интерфейс на русском
+
+After a full run the script is also installed as /usr/local/sbin/harden,
+so later it is just: sudo harden --check
 
 All options can be preset through environment variables — see the header of this file
 or README.md.
@@ -108,7 +116,9 @@ relaunch_in_tmux() {
   inner="env HARDEN_NO_TMUX=1"
   for v in HARDEN_LANG NEW_USER SSH_PORT SSH_PUBKEY GITHUB_KEYS_USER EXTRA_PORTS AUTO_REBOOT REBOOT_TIME \
            LOCK_ROOT LOCK_OTHER_USERS INSTALL_CROWDSEC RUN_LYNIS REBOOT_NOW SET_USER_PASSWORD ADMIN_IP \
-           SERVER_STATUS REUSE_USER SSH_CLIENT; do
+           SERVER_STATUS REUSE_USER TELEGRAM TG_CHAT_ID TG_REPORT_TIME HARDEN_TG_API SSH_CLIENT; do
+    # TG_TOKEN is deliberately not passed: it would sit in tmux's command line, readable
+    # in ps; inside tmux the script asks for it again (hidden input)
     [[ -n ${!v+x} ]] && inner+=" $v=$(printf '%q' "${!v}")"
   done
   inner+=" bash $(printf '%q' "$script"); echo; read -rp $(printf '%q' "$(T 'Enter — закрыть окно tmux' 'Press Enter to close tmux')") _"
@@ -304,6 +314,10 @@ collect_answers() {
   if env_yn INSTALL_CROWDSEC "$(T "Установить CrowdSec (коллективный IPS, дополнение к fail2ban)?" \
                                   "Install CrowdSec (crowd-sourced IPS on top of fail2ban)?")" n; then INSTALL_CROWDSEC=yes; else INSTALL_CROWDSEC=no; fi
   if env_yn RUN_LYNIS "$(T "Запустить в конце аудит Lynis?" "Run a Lynis audit at the end?")" y; then RUN_LYNIS=yes; else RUN_LYNIS=no; fi
+  if env_yn TELEGRAM "$(T "Уведомления в Telegram (входы по SSH, сбои, ежедневная сводка)?" \
+                          "Telegram alerts (SSH logins, failures, daily report)?")" n; then
+    ask_telegram
+  else TELEGRAM=no; fi
 
   echo
   echo "${C_BOLD}$(T "Итог:" "Summary:")${C_0}"
@@ -316,6 +330,7 @@ collect_answers() {
   echo "  $(T "Блок. пароля root: " "Lock root password:") $LOCK_ROOT"
   [[ -n $OTHER_USERS ]] && echo "  $(T "Блок. аккаунтов:   " "Lock accounts:     ") $LOCK_OTHER_USERS ($OTHER_USERS)"
   echo "  CrowdSec:           $INSTALL_CROWDSEC"
+  echo "  Telegram:           $TELEGRAM${TG_CHAT_ID:+ (chat $TG_CHAT_ID)}"
   ask_yn "$(T "Начать настройку?" "Start?")" y || die "$(T "Отменено." "Cancelled.")"
 }
 
@@ -1098,6 +1113,8 @@ final_report() {
   echo "  sudo ausearch -k identity -i      — $(T "кто менял пользователей" "who changed accounts")"
   echo "  sudo lynis audit system           — $(T "полный аудит" "full audit")"
   echo "  server-status                     — $(T "сводка о сервере" "server summary")"
+  echo "  sudo harden --check               — $(T "проверить защиту сервера" "audit the server")"
+  [[ ${TELEGRAM:-no} == yes ]] || echo "  sudo harden --setup-telegram      — $(T "подключить уведомления" "add Telegram alerts")"
   warn "$(T "Docker публикует порты в обход UFW! Используй -p 127.0.0.1:PORT:PORT или ufw-docker." \
             "Docker publishes ports around UFW! Use -p 127.0.0.1:PORT:PORT or ufw-docker.")"
   if [[ -f /var/run/reboot-required ]]; then
@@ -1121,12 +1138,317 @@ final_report() {
   fi
 }
 
+# ---------- Telegram alerts ----------
+# tg_api TOKEN METHOD [curl args] — the token goes to curl on stdin as a config line,
+# never on a command line, where any local user could read it from ps.
+tg_api() {
+  local token=$1 method=$2; shift 2
+  printf 'url = "%s/bot%s/%s"\n' "${HARDEN_TG_API:-https://api.telegram.org}" "$token" "$method" \
+    | curl -sS --max-time 15 -K - "$@" 2>/dev/null || true
+}
+
+ask_telegram() {  # sets TG_TOKEN / TG_CHAT_ID, or TELEGRAM=no if the admin gives up
+  local token=${TG_TOKEN:-} chat=${TG_CHAT_ID:-} bot=""
+  T "  1) В Telegram откройте @BotFather → /newbot → скопируйте токен бота" \
+    "  1) In Telegram open @BotFather → /newbot → copy the bot token"; echo
+  until [[ $token =~ ^[0-9]{5,}:[A-Za-z0-9_-]{30,}$ ]] && tg_api "$token" getMe | grep -q '"ok":true'; do
+    [[ -n $token ]] && warn "$(T "Telegram не принял токен" "Telegram rejected the token")"
+    read -r -s -p "$(T "Токен бота (ввод скрыт, пусто — пропустить): " "Bot token (hidden, empty to skip): ")" token </dev/tty; echo
+    [[ -z $token ]] && { TELEGRAM=no; return 0; }
+  done
+  bot=$(tg_api "$token" getMe | grep -o '"username":"[^"]*"' | cut -d'"' -f4)
+  if [[ ! $chat =~ ^-?[0-9]+$ ]]; then
+    T "  2) Откройте https://t.me/$bot, нажмите Start (или отправьте любое сообщение) и нажмите Enter здесь" \
+      "  2) Open https://t.me/$bot, press Start (or send any message), then press Enter here"; echo
+    read -r _ </dev/tty
+    chat=$(tg_api "$token" getUpdates | grep -o '"chat":{"id":-\{0,1\}[0-9]*' | tail -1 | grep -o -- '-\{0,1\}[0-9]*$' || true)
+    until [[ $chat =~ ^-?[0-9]+$ ]]; do
+      ask "$(T "Chat ID не найден автоматически — введите вручную" "Chat ID not found automatically — enter it")"; chat=$REPLY
+    done
+  fi
+  tg_api "$token" sendMessage --data-urlencode "chat_id=$chat" \
+    --data-urlencode "text=✅ $(hostname): $(T "уведомления harden.sh подключаются" "harden.sh alerts are being set up")" -o /dev/null
+  if ask_yn "$(T "Тестовое сообщение пришло в Telegram?" "Did the test message arrive in Telegram?")" y; then
+    TG_TOKEN=$token; TG_CHAT_ID=$chat; TELEGRAM=yes
+  else
+    warn "$(T "Telegram пропущен. Позже: sudo harden --setup-telegram" "Telegram skipped. Later: sudo harden --setup-telegram")"
+    TELEGRAM=no
+  fi
+}
+
+install_notifications() {
+  [[ ${TELEGRAM:-no} == yes ]] || return 0
+  step "$(T "Уведомления в Telegram" "Telegram alerts")"
+  install -d -m 700 /etc/harden
+  (
+    umask 077
+    printf 'TG_TOKEN=%s\nTG_CHAT_ID=%s\n' "$TG_TOKEN" "$TG_CHAT_ID" >/etc/harden/telegram.conf
+    [[ -n ${HARDEN_TG_API:-} ]] && echo "TG_API=$HARDEN_TG_API" >>/etc/harden/telegram.conf
+    true
+  )
+
+  cat >/usr/local/sbin/harden-notify <<'NOTIFY_EOF'
+#!/bin/bash
+# harden-notify "text" — Telegram message from this server (installed by harden.sh).
+# The token is read from a root-only file and handed to curl on stdin, never on a command line.
+set -u
+CONF=/etc/harden/telegram.conf
+[ -r "$CONF" ] || exit 0
+token=$(sed -n 's/^TG_TOKEN=//p' "$CONF")
+chat=$(sed -n 's/^TG_CHAT_ID=//p' "$CONF")
+api=$(sed -n 's/^TG_API=//p' "$CONF")
+[ -n "$token" ] && [ -n "$chat" ] || exit 0
+if [ "${1:-}" = --boot ]; then set -- "🔄 Server started — kernel $(uname -r)"; fi
+printf 'url = "%s/bot%s/sendMessage"\n' "${api:-https://api.telegram.org}" "$token" \
+  | curl -sS --max-time 15 --retry 3 --retry-delay 5 -K - -o /dev/null \
+      --data-urlencode "chat_id=$chat" \
+      --data-urlencode "text=🖥 $(hostname): $*" \
+      --data-urlencode "disable_web_page_preview=true" 2>/dev/null
+exit 0
+NOTIFY_EOF
+
+  cat >/usr/local/sbin/harden-login-watch <<'WATCH_EOF'
+#!/bin/bash
+# Follows sshd in the journal and sends a Telegram message for every accepted login
+# (installed by harden.sh). Reading the journal means no PAM or sshd config is edited.
+set -u
+journalctl -f -n 0 -o cat SYSLOG_IDENTIFIER=sshd SYSLOG_IDENTIFIER=sshd-session 2>/dev/null |
+while IFS= read -r line; do
+  case $line in
+    "Accepted "*)
+      # Accepted <method> for <user> from <ip> port <port> ssh2[: <type> <fingerprint>]
+      read -r -a f <<<"$line"
+      /usr/local/sbin/harden-notify "🔑 SSH login: ${f[3]:-?} from ${f[5]:-?} (${f[1]:-?}${f[9]:+, ${f[9]}}${f[10]:+ ${f[10]}})" &
+      ;;
+  esac
+done
+WATCH_EOF
+
+  cat >/usr/local/sbin/harden-daily-report <<'REPORT_EOF'
+#!/bin/bash
+# Daily summary to Telegram (installed by harden.sh; run by harden-daily-report.timer).
+set -u
+since=$(date -d '-24 hours' '+%F %T')
+sim=$(apt-get -s -o Debug::NoLocking=1 upgrade 2>/dev/null | grep '^Inst' || true)
+upd=$(printf '%s' "$sim" | grep -c . || true)
+sec=$(printf '%s' "$sim" | grep -ci security || true)
+acc=$(journalctl --since "$since" -o cat SYSLOG_IDENTIFIER=sshd SYSLOG_IDENTIFIER=sshd-session 2>/dev/null | grep '^Accepted ' || true)
+nlog=$(printf '%s' "$acc" | grep -c . || true)
+who=$(printf '%s' "$acc" | awk 'NF{print $4"@"$6}' | sort | uniq -c | sort -rn | head -5 | awk '{printf "%s%s×%s", (NR>1?", ":""), $2, $1}')
+bans=0
+[ -r /var/log/fail2ban.log ] && bans=$(awk -v s="$since" '($1" "substr($2,1,8)) >= s && / Ban /' /var/log/fail2ban.log | wc -l)
+banned=$(fail2ban-client status sshd 2>/dev/null | awk -F'\t' '/Currently banned/{print $2}')
+failed=$(systemctl --failed --no-legend --plain 2>/dev/null | awk '{print $1}' | paste -sd' ' -)
+disk=$(df -h --output=avail,pcent / | awk 'NR==2{print $1" free ("$2" used)"}')
+ram=$(free -m | awk '/^Mem:/{print $7" MB free of "$2}')
+
+msg="📊 Daily report
+Uptime: $(uptime -p | sed 's/^up //'), load $(cut -d' ' -f1-3 /proc/loadavg)
+Updates: $upd pending ($sec security)"
+[ -f /var/run/reboot-required ] && msg="$msg
+⚠️ Reboot required"
+msg="$msg
+SSH logins (24 h): $nlog${who:+ — $who}
+fail2ban: $bans bans in 24 h, ${banned:-0} banned now"
+if command -v cscli >/dev/null; then
+  msg="$msg
+CrowdSec: $(cscli decisions list -o raw 2>/dev/null | tail -n +2 | grep -c . || true) active decisions"
+fi
+msg="$msg
+Failed services: ${failed:-none}
+Disk /: $disk, RAM: $ram"
+/usr/local/sbin/harden-notify "$msg"
+REPORT_EOF
+  chmod 755 /usr/local/sbin/harden-notify /usr/local/sbin/harden-login-watch /usr/local/sbin/harden-daily-report
+
+  cat >/etc/systemd/system/harden-login-watch.service <<'EOF'
+[Unit]
+Description=Telegram alert on every SSH login (harden.sh)
+After=systemd-journald.service network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/local/sbin/harden-login-watch
+Restart=always
+RestartSec=5
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target
+EOF
+  cat >/etc/systemd/system/harden-alert@.service <<'EOF'
+[Unit]
+Description=Telegram alert: %i failed (harden.sh)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/harden-notify "❌ %i failed — systemctl status %i"
+EOF
+  cat >/etc/systemd/system/harden-boot-alert.service <<'EOF'
+[Unit]
+Description=Telegram alert when the server has booted (harden.sh)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/harden-notify --boot
+
+[Install]
+WantedBy=multi-user.target
+EOF
+  cat >/etc/systemd/system/harden-daily-report.service <<'EOF'
+[Unit]
+Description=Daily Telegram report (harden.sh)
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/harden-daily-report
+EOF
+  cat >/etc/systemd/system/harden-daily-report.timer <<EOF
+[Unit]
+Description=Daily Telegram report (harden.sh)
+
+[Timer]
+OnCalendar=*-*-* ${TG_REPORT_TIME:-09:00}
+RandomizedDelaySec=15m
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
+
+  # A failure alert for the services that keep the server safe. Drop-ins are our own
+  # files, so no package config is edited.
+  local u
+  for u in ssh fail2ban crowdsec crowdsec-firewall-bouncer auditd unattended-upgrades; do
+    systemctl cat "$u.service" &>/dev/null || continue
+    mkdir -p "/etc/systemd/system/$u.service.d"
+    printf '[Unit]\nOnFailure=harden-alert@%%n.service\n' >"/etc/systemd/system/$u.service.d/harden-alert.conf"
+  done
+  systemctl daemon-reload
+  systemctl enable --now harden-login-watch.service harden-daily-report.timer &>/dev/null \
+    || warn "$(T "Не удалось запустить службы уведомлений" "Could not start the alert services")"
+  systemctl enable harden-boot-alert.service &>/dev/null || true
+  /usr/local/sbin/harden-notify "✅ $(T "Уведомления включены: входы по SSH, падения служб, загрузка, сводка в" "Alerts on: SSH logins, failed services, boot, daily report at") ${TG_REPORT_TIME:-09:00} $(date +%Z)"
+  ok "$(T "Telegram: входы по SSH, падения служб, загрузка, ежедневная сводка" "Telegram: SSH logins, failed services, boot, daily report")"
+}
+
+# ---------- --check: audit only, nothing is changed ----------
+CHK_PASS=0; CHK_WARN=0; CHK_FAIL=0
+chk() {  # chk pass|warn|fail "text"
+  case $1 in
+    pass) CHK_PASS=$((CHK_PASS + 1)); echo "  ${C_G}✓${C_0} $2" ;;
+    warn) CHK_WARN=$((CHK_WARN + 1)); echo "  ${C_Y}!${C_0} $2" ;;
+    *)    CHK_FAIL=$((CHK_FAIL + 1)); echo "  ${C_R}✗${C_0} $2" ;;
+  esac
+}
+
+run_check() {
+  local cfg v kex weak n list u
+  . /etc/os-release
+  step "$(T "Проверка сервера — ничего не меняется" "Server check — nothing is changed")"
+  echo "  ${PRETTY_NAME:-?}, kernel $(uname -r)"
+
+  echo; echo "${C_BOLD}SSH${C_0}"
+  cfg=$(sshd -T 2>/dev/null || true)
+  sv() { awk -v k="$1" '$1==k{$1=""; sub(/^ /,""); print; exit}' <<<"$cfg"; }
+  if [[ -z $cfg ]]; then
+    chk fail "$(T "sshd -T не отработал — конфиг SSH не читается" "sshd -T failed — the SSH config cannot be read")"
+  else
+    v=$(awk '$1=="port"{print $2}' <<<"$cfg" | paste -sd' ' -)
+    [[ " $v " == *" 22 "* ]] && chk warn "$(T "Порт 22 (много шума от ботов)" "Port 22 (lots of bot noise)")" || chk pass "$(T "Порт" "Port") $v"
+    [[ $(sv permitrootlogin) == no ]] && chk pass "PermitRootLogin no" || chk fail "PermitRootLogin $(sv permitrootlogin)"
+    [[ $(sv passwordauthentication) == no ]] && chk pass "PasswordAuthentication no" || chk fail "PasswordAuthentication $(sv passwordauthentication)"
+    [[ $(sv kbdinteractiveauthentication) == no ]] && chk pass "KbdInteractiveAuthentication no" || chk fail "KbdInteractiveAuthentication $(sv kbdinteractiveauthentication)"
+    [[ $(sv permitemptypasswords) == no ]] && chk pass "PermitEmptyPasswords no" || chk fail "PermitEmptyPasswords $(sv permitemptypasswords)"
+    v=$(sv maxauthtries); (( ${v:-6} <= 3 )) && chk pass "MaxAuthTries $v" || chk warn "MaxAuthTries $v ($(T "лучше" "better") ≤ 3)"
+    [[ $(sv x11forwarding) == no ]] && chk pass "X11Forwarding no" || chk warn "X11Forwarding $(sv x11forwarding)"
+    [[ -n $(sv allowusers) ]] && chk pass "AllowUsers $(sv allowusers)" || chk warn "$(T "AllowUsers не задан — войти может любой пользователь с ключом" "AllowUsers not set — any user with a key can log in")"
+    kex=$(sv kexalgorithms)
+    [[ $kex =~ mlkem768|sntrup761 ]] && chk pass "$(T "Постквантовый обмен ключами" "Post-quantum key exchange")" \
+      || chk warn "$(T "Нет постквантового обмена ключами (mlkem768/sntrup761)" "No post-quantum key exchange (mlkem768/sntrup761)")"
+    weak=$(tr ',' '\n' <<<"$kex,$(sv ciphers),$(sv macs),$(sv hostkeyalgorithms)" \
+           | grep -E 'sha1|cbc|md5|umac-64|group1-|3des|arcfour|^ssh-rsa$|ssh-dss' | paste -sd' ' - || true)
+    [[ -z $weak ]] && chk pass "$(T "Нет слабых алгоритмов" "No weak algorithms")" || chk fail "$(T "Слабые алгоритмы:" "Weak algorithms:") $weak"
+  fi
+
+  echo; echo "${C_BOLD}$(T "Аккаунты" "Accounts")${C_0}"
+  case $(passwd -S root 2>/dev/null | awk '{print $2}') in
+    L)  chk pass "$(T "Пароль root заблокирован" "root password locked")" ;;
+    NP) chk fail "$(T "У root ПУСТОЙ пароль" "root has an EMPTY password")" ;;
+    *)  chk warn "$(T "У root есть пароль (вход по SSH всё равно запрещён?)" "root has a password (is SSH login for root denied?)")" ;;
+  esac
+  list=$(awk -F: '$2==""{print $1}' /etc/shadow 2>/dev/null | paste -sd' ' -)
+  [[ -z $list ]] && chk pass "$(T "Нет аккаунтов с пустым паролем" "No accounts with an empty password")" || chk fail "$(T "Пустой пароль:" "Empty password:") $list"
+  list=""
+  for u in $(awk -F: '$3>=1000 && $3<60000 && $7!~/(nologin|false)$/{print $1}' /etc/passwd); do
+    [[ $(passwd -S "$u" 2>/dev/null | awk '{print $2}') == P ]] && list+="$u "
+  done
+  [[ -n $list ]] && chk pass "$(T "Аккаунты с входом:" "Login accounts:") $list" || chk warn "$(T "Нет аккаунта с паролем для sudo" "No account with a password for sudo")"
+  list=$(grep -hsE '^[^#%].*NOPASSWD' /etc/sudoers /etc/sudoers.d/* | awk '{print $1}' | sort -u | paste -sd' ' - || true)
+  [[ -z $list ]] && chk pass "$(T "Нет sudo без пароля" "No passwordless sudo")" || chk warn "$(T "sudo без пароля (NOPASSWD):" "Passwordless sudo (NOPASSWD):") $list"
+
+  echo; echo "${C_BOLD}$(T "Сеть и защита" "Network and protection")${C_0}"
+  if ufw status 2>/dev/null | grep -q '^Status: active'; then
+    ufw status verbose 2>/dev/null | grep -q 'deny (incoming)' && chk pass "$(T "UFW включён, входящие запрещены" "UFW on, incoming denied")" \
+      || chk warn "$(T "UFW включён, но входящие не запрещены по умолчанию" "UFW on, but incoming is not denied by default")"
+  else
+    chk fail "$(T "Firewall UFW выключен" "UFW firewall is off")"
+  fi
+  list=$(ss -Hltnu 2>/dev/null | awk '{print $5}' | grep -vE '^(127\.|\[::1\]|\[::ffff:127\.)' | sed -E 's/.*:([0-9]+)$/\1/' | sort -un | paste -sd' ' - || true)
+  chk pass "$(T "Порты, слушающие снаружи:" "Ports listening publicly:") ${list:-$(T "нет" "none")}"
+  systemctl is-active --quiet fail2ban && fail2ban-client status sshd &>/dev/null \
+    && chk pass "$(T "fail2ban защищает SSH" "fail2ban protects SSH")" || chk fail "$(T "fail2ban не защищает SSH" "fail2ban does not protect SSH")"
+  if systemctl cat crowdsec.service &>/dev/null; then
+    systemctl is-active --quiet crowdsec && chk pass "CrowdSec" || chk warn "$(T "CrowdSec установлен, но не работает" "CrowdSec installed but not running")"
+  fi
+  systemctl is-active --quiet auditd && chk pass "auditd" || chk warn "$(T "auditd не работает" "auditd not running")"
+  aa-status --enabled 2>/dev/null && chk pass "AppArmor" || chk warn "$(T "AppArmor выключен" "AppArmor off")"
+  [[ -s /etc/harden/telegram.conf ]] && systemctl is-active --quiet harden-login-watch \
+    && chk pass "$(T "Уведомления в Telegram" "Telegram alerts")" || chk warn "$(T "Уведомлений нет (sudo harden --setup-telegram)" "No alerts (sudo harden --setup-telegram)")"
+
+  echo; echo "${C_BOLD}$(T "Обновления и ядро" "Updates and kernel")${C_0}"
+  apt-config dump 2>/dev/null | grep -q 'APT::Periodic::Unattended-Upgrade "1"' \
+    && chk pass "$(T "Автообновления безопасности" "Automatic security updates")" || chk fail "$(T "Автообновления выключены" "Automatic updates off")"
+  n=$(apt-get -s -o Debug::NoLocking=1 upgrade 2>/dev/null | grep -c '^Inst' || true)
+  (( n == 0 )) && chk pass "$(T "Все обновления установлены" "All updates installed")" || chk warn "$(T "Ожидают установки:" "Pending updates:") $n"
+  [[ -f /var/run/reboot-required ]] && chk warn "$(T "Нужна перезагрузка" "Reboot required")" || chk pass "$(T "Перезагрузка не нужна" "No reboot needed")"
+  [[ $(timedatectl show -p NTPSynchronized --value 2>/dev/null) == yes ]] \
+    && chk pass "$(T "Время синхронизировано" "Clock synchronised")" || chk warn "$(T "Время не синхронизировано" "Clock not synchronised")"
+  list=""
+  for v in kernel.kptr_restrict=2 kernel.dmesg_restrict=1 kernel.randomize_va_space=2 fs.suid_dumpable=0 \
+           fs.protected_symlinks=1 fs.protected_hardlinks=1 net.ipv4.tcp_syncookies=1 \
+           net.ipv4.conf.all.accept_redirects=0 net.ipv4.conf.all.send_redirects=0 \
+           net.ipv4.conf.all.accept_source_route=0 net.ipv4.conf.all.rp_filter=1; do
+    [[ $(sysctl -n "${v%%=*}" 2>/dev/null) == "${v#*=}" ]] || list+="${v%%=*} "
+  done
+  [[ -z $list ]] && chk pass "$(T "Параметры ядра (sysctl)" "Kernel settings (sysctl)")" || chk warn "$(T "Отличаются от рекомендуемых:" "Differ from recommended:") $list"
+
+  echo
+  echo "${C_BOLD}$(T "Итог" "Summary"): ${C_G}✓ $CHK_PASS${C_0}  ${C_Y}! $CHK_WARN${C_0}  ${C_R}✗ $CHK_FAIL${C_0}"
+  (( CHK_FAIL == 0 ))
+}
+
 main() {
   case ${1:-} in -h|--help) usage; exit 0 ;; esac
   [[ $EUID -eq 0 ]] || die "Run as root: sudo bash harden.sh / Запусти от root: sudo bash harden.sh"
   choose_language
-  # Only the login summary, for an already hardened server: sudo bash harden.sh --install-status
-  if [[ ${1:-} == --install-status ]]; then install_server_status; exit 0; fi
+  case ${1:-} in
+    # Only the login summary, for an already hardened server
+    --install-status) install_server_status; exit 0 ;;
+    --check) run_check || exit 1; exit 0 ;;
+    --setup-telegram)
+      TELEGRAM=yes; ask_telegram; install_notifications
+      [[ $TELEGRAM == yes ]] || exit 1
+      exit 0 ;;
+    "") ;;
+    *) usage; exit 2 ;;
+  esac
   relaunch_in_tmux
   preflight
   collect_answers
@@ -1139,11 +1461,15 @@ main() {
   setup_firewall
   setup_fail2ban
   setup_crowdsec
+  # Before SSH, so the admin's test login on the new port is the first alert they see
+  install_notifications
   setup_ssh
   # Only once the new user's login is confirmed — on AWS/Oracle (ubuntu/opc logins)
   # locking them earlier would leave no way in if SSH had to be rolled back
   lock_other_users
   lock_root
+  # Keep a copy for later: sudo harden --check / --setup-telegram
+  [[ -f $0 ]] && install -m 755 "$0" /usr/local/sbin/harden
   final_report
 }
 
