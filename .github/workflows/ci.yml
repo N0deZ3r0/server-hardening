@@ -58,6 +58,20 @@ jobs:
           out=$(bash harden.sh 2>&1 </dev/null) && { echo "::error::ran without root"; exit 1; }
           echo "$out" | grep -q 'Run as root'
 
+      - name: detect_admin_ip reads the peer column of ss
+        # With a state filter ss drops the State column, so $3 is local and $4 is the peer.
+        # A real listening socket and a real client prove it; ports tell the two sides apart.
+        run: |
+          set -x
+          python3 -m http.server 18765 --bind 127.0.0.1 >/dev/null 2>&1 &
+          for _ in 1 2 3 4 5 6 7 8 9 10; do ss -Hltn 'sport = :18765' | grep -q . && break; sleep 0.5; done
+          exec 3<>/dev/tcp/127.0.0.1/18765
+          line=$(ss -Htn state established '( sport = :18765 )' | head -1)
+          echo "$line"
+          echo "$line" | awk '{ exit !($3 ~ /:18765$/ && $4 !~ /:18765$/) }'
+          ip=$(env -u SSH_CLIENT bash -c 'source ./harden.sh; CURRENT_SSH_PORTS=18765; detect_admin_ip' </dev/null)
+          test "$ip" = 127.0.0.1
+
       - name: CrowdSec repository — pinned key, only CrowdSec packages
         # The real function against the real repository, on the release it targets.
         run: |

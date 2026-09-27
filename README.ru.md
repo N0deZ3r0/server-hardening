@@ -158,6 +158,7 @@ sudo HARDEN_LANG=ru NEW_USER=sysop SSH_PORT=42222 GITHUB_KEYS_USER=вашник 
 | `AUTO_REBOOT`, `REBOOT_TIME` | ночная перезагрузка после обновления ядра, по умолчанию `04:00` |
 | `LOCK_ROOT`, `LOCK_OTHER_USERS` | заблокировать пароль root / аккаунты хостера |
 | `INSTALL_CROWDSEC`, `RUN_LYNIS`, `REBOOT_NOW`, `SERVER_STATUS` | `yes` / `no` |
+| `REUSE_USER` | `yes` — использовать уже существующий аккаунт (иначе спросит) |
 | `SET_USER_PASSWORD=no` | не задавать пароль для sudo сейчас; root тогда не блокируется |
 
 ## Совместимость

@@ -22,7 +22,8 @@
 #    EXTRA_PORTS="80,443", ADMIN_IP (empty = none), AUTO_REBOOT=yes|no,
 #    REBOOT_TIME=04:00, LOCK_ROOT=yes|no, LOCK_OTHER_USERS=yes|no,
 #    INSTALL_CROWDSEC=yes|no, RUN_LYNIS=yes|no, REBOOT_NOW=yes|no,
-#    SERVER_STATUS=yes|no, SET_USER_PASSWORD=no (root is then NOT locked)
+#    SERVER_STATUS=yes|no, REUSE_USER=yes|no (use an existing account),
+#    SET_USER_PASSWORD=no (root is then NOT locked)
 # =============================================================================
 set -Eeuo pipefail
 
@@ -107,7 +108,7 @@ relaunch_in_tmux() {
   inner="env HARDEN_NO_TMUX=1"
   for v in HARDEN_LANG NEW_USER SSH_PORT SSH_PUBKEY GITHUB_KEYS_USER EXTRA_PORTS AUTO_REBOOT REBOOT_TIME \
            LOCK_ROOT LOCK_OTHER_USERS INSTALL_CROWDSEC RUN_LYNIS REBOOT_NOW SET_USER_PASSWORD ADMIN_IP \
-           SERVER_STATUS SSH_CLIENT; do
+           SERVER_STATUS REUSE_USER SSH_CLIENT; do
     [[ -n ${!v+x} ]] && inner+=" $v=$(printf '%q' "${!v}")"
   done
   inner+=" bash $(printf '%q' "$script"); echo; read -rp $(printf '%q' "$(T 'Enter — закрыть окно tmux' 'Press Enter to close tmux')") _"
@@ -171,6 +172,8 @@ detect_admin_ip() {  # the IP the admin is connected from right now
     ip=$(who -m 2>/dev/null | grep -oE '\(([0-9]{1,3}\.){3}[0-9]{1,3}\)' | tr -d '()' || true)
   fi
   if [[ -z $ip ]]; then  # sudo/tmux lost SSH_CLIENT — use the single established SSH peer
+    # With a state filter ss drops the State column: $3 is the local address, $4 the peer.
+    # CI checks this layout on a real socket, since reading it as $5 is an easy mistake.
     for p in $CURRENT_SSH_PORTS; do filter+="${filter:+ or }sport = :$p"; done
     ip=$(ss -Htn state established "( $filter )" 2>/dev/null | awk '{print $4}' \
          | sed -E 's/:[0-9]+$//; s/^\[//; s/\]$//; s/^::ffff://' | sort -u || true)
@@ -190,17 +193,36 @@ valid_user() {
   fi
 }
 
+# An existing account (the provider's "ubuntu" on AWS, say) is reused only on an explicit
+# yes: it may already carry other people's keys or a NOPASSWD sudo rule from cloud-init.
+confirm_existing_user() {
+  id "$1" &>/dev/null || return 0
+  local keys=0
+  [[ -f /home/$1/.ssh/authorized_keys ]] && keys=$(grep -c . "/home/$1/.ssh/authorized_keys" || true)
+  warn "$(T "Пользователь '$1' уже существует. Ключей в его authorized_keys: $keys — они останутся." \
+            "User '$1' already exists. Keys in its authorized_keys: $keys — they will stay.")"
+  if grep -qsE "^$1[[:space:]].*NOPASSWD" /etc/sudoers /etc/sudoers.d/*; then
+    warn "$(T "У '$1' есть sudo без пароля (NOPASSWD) — скрипт его не отключит." \
+              "'$1' has passwordless sudo (NOPASSWD) — the script will not remove it.")"
+  fi
+  if env_yn REUSE_USER "$(T "Использовать существующего '$1'?" "Use the existing '$1'?")" n; then return 0; fi
+  NEW_USER=""
+  return 1
+}
+
 port_busy() { ss -Hltn "sport = :$1" 2>/dev/null | grep -q .; }
 
 collect_answers() {
   step "$(T "Настройка параметров" "Settings")"
 
   NEW_USER=${NEW_USER:-}
-  until [[ -n $NEW_USER ]] && valid_user "$NEW_USER"; do
+  until [[ -n $NEW_USER ]] && valid_user "$NEW_USER" && confirm_existing_user "$NEW_USER"; do
     ask "$(T "Имя нового пользователя с sudo" "Name of the new sudo user")" "sysop"; NEW_USER=$REPLY
   done
 
   PUBKEY_FILE=$(mktemp)
+  # The public key is not a secret, but a failed run should not leave files in /tmp
+  trap 'rm -f "${PUBKEY_FILE:-}" "${PUBKEY_FILE:-}.clean"' EXIT
   if [[ -n ${SSH_PUBKEY:-} ]]; then
     printf '%s\n' "$SSH_PUBKEY" >"$PUBKEY_FILE"
   elif [[ -n ${GITHUB_KEYS_USER:-} ]]; then
@@ -601,7 +623,12 @@ setup_firewall() {
   ufw default allow outgoing
   ufw default deny routed
   local p
-  for p in $CURRENT_SSH_PORTS; do ufw allow "$p/tcp" comment 'SSH (temporary)' >/dev/null; done
+  # The new port is never added as a plain allow: UFW stops at the first match, and a plain
+  # allow before the limit rule would switch rate limiting off (re-run with the same port)
+  for p in $CURRENT_SSH_PORTS; do
+    [[ $p == "$SSH_PORT" ]] && continue
+    ufw allow "$p/tcp" comment 'SSH (temporary)' >/dev/null
+  done
   # The admin is not rate-limited: this rule precedes the limit rule and UFW stops at the first match
   [[ -n $ADMIN_IP ]] && ufw allow from "$ADMIN_IP" to any port "$SSH_PORT" proto tcp comment 'SSH admin' >/dev/null
   ufw limit "$SSH_PORT/tcp" comment 'SSH' >/dev/null
@@ -735,6 +762,8 @@ HOOK_EOF
     [[ -e $f ]] || continue
     real=$(readlink -f "$f")
     if dpkg -S "$real" &>/dev/null; then
+      # 0644 = readable but not executable: pam_motd's run-parts skips it. Undo with
+      # dpkg-statoverride --remove <file> && chmod 755 <file>
       dpkg-statoverride --list "$real" &>/dev/null || dpkg-statoverride --update --add root root 0644 "$real"
     else
       chmod -x "$real"
@@ -774,7 +803,12 @@ setup_crowdsec_repo() {
     rm -rf "$tmp"
     warn "$(T "Не удалось скачать ключ CrowdSec" "Could not download the CrowdSec key")"; return 1
   fi
-  gpg --batch --quiet --homedir "$tmp" --dearmor -o "$tmp/key.gpg" "$tmp/key.asc" 2>/dev/null || true
+  # Armored or binary — either way the fingerprint check below decides
+  if grep -q -- '-----BEGIN PGP PUBLIC KEY BLOCK-----' "$tmp/key.asc"; then
+    gpg --batch --quiet --homedir "$tmp" --dearmor -o "$tmp/key.gpg" "$tmp/key.asc" 2>/dev/null || true
+  else
+    cp "$tmp/key.asc" "$tmp/key.gpg"
+  fi
   fpr=$(gpg --batch --homedir "$tmp" --show-keys --with-colons "$tmp/key.gpg" 2>/dev/null | awk -F: '/^fpr/{print $10; exit}')
   if [[ $fpr != "$CROWDSEC_KEY_FPR" ]]; then
     rm -rf "$tmp"
@@ -893,7 +927,7 @@ LoginGraceTime 30
 ClientAliveInterval 300
 ClientAliveCountMax 2
 
-# --- Off (AllowTcpForwarding local — for SSH tunnels / VS Code Remote) ---
+# --- Off. SSH tunnels and VS Code Remote-SSH need: AllowTcpForwarding local ---
 X11Forwarding no
 AllowAgentForwarding no
 AllowTcpForwarding no

@@ -156,6 +156,7 @@ sudo HARDEN_LANG=en NEW_USER=sysop SSH_PORT=42222 GITHUB_KEYS_USER=yourname \
 | `AUTO_REBOOT`, `REBOOT_TIME` | nightly reboot after kernel updates, default `04:00` |
 | `LOCK_ROOT`, `LOCK_OTHER_USERS` | lock the root password / provider accounts |
 | `INSTALL_CROWDSEC`, `RUN_LYNIS`, `REBOOT_NOW`, `SERVER_STATUS` | `yes` / `no` |
+| `REUSE_USER` | `yes` to use an account that already exists (asked otherwise) |
 | `SET_USER_PASSWORD=no` | skip the sudo password now; root then stays unlocked |
 
 ## Compatibility
