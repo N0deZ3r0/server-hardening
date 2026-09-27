@@ -574,6 +574,87 @@ EOF
   ok "fail2ban включён (статус: fail2ban-client status sshd)"
 }
 
+# ---------- сводка о сервере при входе по SSH ----------
+install_server_status() {
+  [[ ${SERVER_STATUS:-yes} == yes ]] || return 0
+  step "Сводка о сервере при входе (server-status)"
+  cat >/usr/local/bin/server-status <<'STATUS_EOF'
+#!/bin/bash
+# server-status — сводка о сервере при входе по SSH (установлено harden.sh).
+# Запуск вручную: server-status
+RED='\033[0;31m'; GREEN='\033[0;32m'; GOLD='\033[38;5;214m'; YELLOW='\033[38;5;226m'
+CYAN='\033[0;36m'; LIME='\033[38;5;118m'; NC='\033[0m'
+line() { echo -e "${CYAN}$1${NC}"; }
+kv()   { echo -e " ${YELLOW}$1:${NC} $2"; }
+pct()  {  # свободно %: красный <10, жёлтый <25
+  if   [ "$1" -lt 10 ]; then echo -e "${RED}$1%${NC}"
+  elif [ "$1" -lt 25 ]; then echo -e "${YELLOW}$1%${NC}"
+  else echo -e "${GREEN}$1%${NC}"; fi
+}
+svc()  {  # только установленные службы
+  systemctl cat "$1.service" >/dev/null 2>&1 || return 0
+  if systemctl is-active --quiet "$1"; then printf " %-10s %b\n" "$1" "${GREEN}✓${NC}"
+  else printf " %-10s %b\n" "$1" "${RED}✗${NC}"; fi
+}
+
+LOCAL_IP=$(ip -4 -o addr show scope global 2>/dev/null | awk '{split($4,a,"/"); print a[1]; exit}')
+OS=$(. /etc/os-release 2>/dev/null; echo "${PRETTY_NAME:-Linux}")
+USER_NAME=$(id -un)
+if [ "$USER_NAME" = root ]; then USER_C="${RED}${USER_NAME}${NC}"; else USER_C="${GOLD}${USER_NAME}${NC}"; fi
+read -r RAM_TOTAL RAM_AVAIL < <(free -m | awk '/^Mem:/{print $2, $7}')
+read -r DISK_SIZE DISK_AVAIL DISK_USED < <(df -h --output=size,avail,pcent / | awk 'NR==2{print $1, $2, $3}')
+
+# Обновления: кэш Ubuntu (мгновенно), иначе симуляция apt (не дольше 3 сек)
+UPDATES=""
+if [ -r /var/lib/update-notifier/updates-available ]; then
+  UPDATES=$(grep -oE '^[0-9]+ updates? can be applied' /var/lib/update-notifier/updates-available | grep -oE '^[0-9]+')
+  UPDATES=${UPDATES:-0}
+fi
+[ -n "$UPDATES" ] || UPDATES=$(timeout 3 apt-get -s -o Debug::NoLocking=1 upgrade 2>/dev/null | grep -c '^Inst')
+
+line "========================================"
+line "       🖥️  SYSTEM STATUS"
+line "========================================"
+kv "IP"       "$LOCAL_IP"
+kv "Hostname" "${LIME}$(hostname)${NC}"
+kv "OS"       "$OS ($(uname -r))"
+kv "User"     "$USER_C"
+kv "Loadavg"  "$(cut -d' ' -f1-3 /proc/loadavg)"
+kv "Uptime"   "$(uptime -p | sed 's/^up //')"
+if [ "${UPDATES:-0}" -gt 0 ]; then kv "Updates" "${RED}${UPDATES}${NC}"; else kv "Updates" "${GREEN}0${NC}"; fi
+[ -f /var/run/reboot-required ] && kv "Reboot" "${RED}required (sudo reboot)${NC}"
+line "----------------------------------------"
+kv "CPU"      "$(nproc) cores"
+kv "RAM"      "${RAM_TOTAL} MB total, ${RAM_AVAIL} MB free ($(pct $(( RAM_AVAIL * 100 / RAM_TOTAL ))))"
+kv "Disk /"   "${DISK_SIZE} total, ${DISK_AVAIL} free ($(pct $(( 100 - ${DISK_USED%\%} ))))"
+kv "Gateway"  "$(ip route show default 2>/dev/null | awk '{print $3; exit}')"
+line "----------------------------------------"
+if grep -qs '^ENABLED=yes' /etc/ufw/ufw.conf; then printf " %-10s %b\n" ufw "${GREEN}✓${NC}"
+elif command -v ufw >/dev/null; then printf " %-10s %b\n" ufw "${RED}✗ disabled${NC}"; fi
+for s in ssh fail2ban crowdsec auditd nginx x-ui docker; do svc "$s"; done
+line "========================================"
+STATUS_EOF
+  chmod 755 /usr/local/bin/server-status
+
+  # Показ при входе по SSH: один раз за сессию, не в каждом окне tmux
+  cat >/etc/profile.d/99-server-status.sh <<'HOOK_EOF'
+# Сводка о сервере при входе по SSH (harden.sh). Отключить: sudo rm /etc/profile.d/99-server-status.sh
+case $- in *i*) ;; *) return 0 ;; esac
+if [ -n "${SSH_CONNECTION:-}" ] && [ -z "${TMUX:-}" ] && [ -z "${SERVER_STATUS_SHOWN:-}" ] && [ -x /usr/local/bin/server-status ]; then
+  export SERVER_STATUS_SHOWN=1
+  /usr/local/bin/server-status
+fi
+HOOK_EOF
+
+  # Убрать шум Ubuntu при входе (реклама из интернета, справка, дубль системной информации)
+  local f
+  for f in 10-help-text 50-motd-news 50-landscape-sysinfo; do
+    [[ -f /etc/update-motd.d/$f ]] && chmod -x "/etc/update-motd.d/$f"
+  done
+  [[ -f /etc/default/motd-news ]] && sed -i 's/^ENABLED=.*/ENABLED=0/' /etc/default/motd-news
+  ok "Сводка будет показываться при входе. Вручную: server-status"
+}
+
 setup_crowdsec() {
   [[ $INSTALL_CROWDSEC == yes ]] || return 0
   step "CrowdSec"
@@ -838,6 +919,8 @@ final_report() {
 
 main() {
   [[ $EUID -eq 0 ]] || die "Запусти от root: sudo bash harden.sh"
+  # Только поставить сводку на уже настроенный сервер: sudo bash harden.sh --install-status
+  if [[ ${1:-} == --install-status ]]; then install_server_status; exit 0; fi
   relaunch_in_tmux "$@"
   preflight
   collect_answers
@@ -845,6 +928,7 @@ main() {
   setup_user
   lock_other_users
   harden_system
+  install_server_status
   setup_auditd
   setup_autoupdates
   setup_firewall
