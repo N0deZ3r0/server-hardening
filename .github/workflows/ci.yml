@@ -17,7 +17,9 @@ concurrency:
 jobs:
   check:
     name: Syntax, ShellCheck, smoke
-    runs-on: ubuntu-latest
+    # Pinned: ubuntu-latest moves to 26.04 in October 2026, and 24.04 is the release the
+    # script was run on live, so a change in results should come from a commit, not the runner.
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
 
     steps:
