@@ -7,7 +7,7 @@
 Зайди на сервер под root и выполни:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/<USER>/<REPO>/main/harden.sh -o harden.sh && sudo bash harden.sh
+curl -fsSL https://raw.githubusercontent.com/N0deZ3r0/server-hardening/main/harden.sh -o harden.sh && sudo bash harden.sh
 ```
 
 Лучше запускать внутри `tmux`, чтобы обрыв связи не прервал настройку:

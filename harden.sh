@@ -3,7 +3,7 @@
 #  harden.sh — первичная настройка и защита сервера Debian / Ubuntu (2026)
 #
 #  Поддержка: Debian 12/13, Ubuntu 22.04/24.04/26.04
-#  Запуск:    curl -fsSL https://raw.githubusercontent.com/<USER>/<REPO>/main/harden.sh -o harden.sh && sudo bash harden.sh
+#  Запуск:    curl -fsSL https://raw.githubusercontent.com/N0deZ3r0/server-hardening/main/harden.sh -o harden.sh && sudo bash harden.sh
 #
 #  Что делает (по порядку):
 #    1. Спрашивает: имя нового пользователя, SSH-ключ, новый порт SSH и т.д.
