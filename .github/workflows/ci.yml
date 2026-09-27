@@ -79,13 +79,14 @@ jobs:
         run: |
           set -x
           cat > fake_tg.py <<'EOF'
-          import http.server, json
+          import http.server, json, urllib.parse
           class H(http.server.BaseHTTPRequestHandler):
               def do_POST(self):
                   n = int(self.headers.get('Content-Length', 0))
-                  body = self.rfile.read(n).decode()
+                  # Decoded, so the checks do not depend on how curl encodes spaces
+                  body = urllib.parse.parse_qs(self.rfile.read(n).decode())
                   with open('tg.log', 'a') as f:
-                      f.write(self.path + ' ' + body + '\n')
+                      f.write(self.path + ' ' + json.dumps(body, ensure_ascii=False) + '\n')
                   out = json.dumps({'ok': True, 'result': {'username': 'cibot'}}).encode()
                   self.send_response(200)
                   self.send_header('Content-Type', 'application/json')
@@ -105,11 +106,11 @@ jobs:
           sudo stat -c '%a %U' /etc/harden/telegram.conf | grep -q '^600 root'
           if sudo grep -rq "$token" /usr/local/sbin /etc/systemd/system; then echo "::error::token found in a script or unit"; exit 1; fi
           grep -q "/bot$token/sendMessage" tg.log
-          grep -q 'chat_id=42' tg.log
+          grep -qF '"chat_id": ["42"]' tg.log
           sudo /usr/local/sbin/harden-notify "ci hello"
-          grep -q 'ci%20hello' tg.log
+          grep -qF ': ci hello' tg.log
           sudo /usr/local/sbin/harden-daily-report
-          grep -q 'Daily%20report' tg.log
+          grep -qF 'Daily report' tg.log
           # Every SSH login is reported, read from the journal
           systemctl is-active harden-login-watch
           sleep 2

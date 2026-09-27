@@ -1355,10 +1355,14 @@ run_check() {
   echo "  ${PRETTY_NAME:-?}, kernel $(uname -r)"
 
   echo; echo "${C_BOLD}SSH${C_0}"
-  cfg=$(sshd -T 2>/dev/null || true)
+  # sshd -T refuses to run without its runtime directory, which is missing whenever sshd
+  # is socket-activated and idle (Ubuntu 24.04). It lives in /run (tmpfs), so creating it
+  # leaves nothing behind.
+  [[ -d /run/sshd ]] || mkdir -p -m 755 /run/sshd
+  cfg=$(sshd -T 2>&1) || { v=$(head -1 <<<"$cfg"); cfg=""; }
   sv() { awk -v k="$1" '$1==k{$1=""; sub(/^ /,""); print; exit}' <<<"$cfg"; }
   if [[ -z $cfg ]]; then
-    chk fail "$(T "sshd -T не отработал — конфиг SSH не читается" "sshd -T failed — the SSH config cannot be read")"
+    chk fail "$(T "sshd -T не отработал — конфиг SSH не читается" "sshd -T failed — the SSH config cannot be read"): ${v:-?}"
   else
     v=$(awk '$1=="port"{print $2}' <<<"$cfg" | paste -sd' ' -)
     [[ " $v " == *" 22 "* ]] && chk warn "$(T "Порт 22 (много шума от ботов)" "Port 22 (lots of bot noise)")" || chk pass "$(T "Порт" "Port") $v"
@@ -1400,7 +1404,9 @@ run_check() {
   else
     chk fail "$(T "Firewall UFW выключен" "UFW firewall is off")"
   fi
-  list=$(ss -Hltnu 2>/dev/null | awk '{print $5}' | grep -vE '^(127\.|\[::1\]|\[::ffff:127\.)' | sed -E 's/.*:([0-9]+)$/\1/' | sort -un | paste -sd' ' - || true)
+  # Everything bound beyond loopback; UDP 68 is the DHCP client, not a service
+  list=$(ss -Hltnu 2>/dev/null | awk '{print $1, $5}' | grep -vE ' (127\.|\[::1\]|\[::ffff:127\.)' \
+         | grep -vE '^udp .*:68$' | sed -E 's/.*:([0-9]+)$/\1/' | sort -un | paste -sd' ' - || true)
   chk pass "$(T "Порты, слушающие снаружи:" "Ports listening publicly:") ${list:-$(T "нет" "none")}"
   systemctl is-active --quiet fail2ban && fail2ban-client status sshd &>/dev/null \
     && chk pass "$(T "fail2ban защищает SSH" "fail2ban protects SSH")" || chk fail "$(T "fail2ban не защищает SSH" "fail2ban does not protect SSH")"
