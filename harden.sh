@@ -668,8 +668,14 @@ pct()  {  # free %: red below 10, yellow below 25
 }
 svc()  {  # installed services only
   systemctl cat "$1.service" >/dev/null 2>&1 || return 0
-  if systemctl is-active --quiet "$1"; then printf " %-10s %b\n" "$1" "${GREEN}✓${NC}"
-  else printf " %-10s %b\n" "$1" "${RED}✗${NC}"; fi
+  local state
+  state=$(systemctl is-active "$1" 2>/dev/null)
+  case $state in
+    active) printf " %-10s %b\n" "$1" "${GREEN}✓${NC}" ;;
+    # Right after boot some services take a while (CrowdSec: ~20 s) — not a failure
+    activating|reloading) printf " %-10s %b\n" "$1" "${YELLOW}… starting${NC}" ;;
+    *) printf " %-10s %b\n" "$1" "${RED}✗ ${state:-unknown}${NC}" ;;
+  esac
 }
 
 LOCAL_IP=$(ip -4 -o addr show scope global 2>/dev/null | awk '{split($4,a,"/"); print a[1]; exit}')
