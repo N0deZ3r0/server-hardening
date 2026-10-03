@@ -38,7 +38,7 @@ set -Eeuo pipefail
 # explicitly where it is written.
 umask 022
 
-HARDEN_VERSION="2026.10.10"
+HARDEN_VERSION="2026.10.11"
 LOG_FILE="/var/log/harden.log"
 REPORT_FILE="/root/harden-report.txt"
 BACKUP_DIR="/root/harden-backup-$(date +%Y%m%d-%H%M%S)"
@@ -58,6 +58,17 @@ ok()    { echo "${C_G}[✓]${C_0} $*"; }
 warn()  { echo "${C_Y}[!]${C_0} $*"; }
 die()   { echo "${C_R}[✗]${C_0} $*" >&2; exit 1; }
 step()  { echo; echo "${C_BOLD}${C_B}==> $*${C_0}"; }
+# A frame sized from the text. Drawn by hand, the side came out one column short of the
+# corners. The length is taken in a UTF-8 locale: under LANG=C it would count bytes, and
+# Cyrillic is two bytes per letter.
+warn_box() {
+  local msg=$1 bar LC_ALL=C.UTF-8
+  printf -v bar '%*s' $(( ${#msg} + 4 )) ''
+  bar=${bar// /═}
+  echo "${C_BOLD}${C_Y}╔${bar}╗"
+  echo "║  ${msg}  ║"
+  echo "╚${bar}╝${C_0}"
+}
 
 trap 'echo "${C_R}[✗] $(T "Ошибка в строке" "Error at line") $LINENO: $BASH_COMMAND${C_0}" >&2
       echo "$(T "Бэкап конфигов" "Config backup"): $BACKUP_DIR, $(T "лог" "log"): $LOG_FILE" >&2' ERR
@@ -1204,13 +1215,8 @@ setup_ssh() {
   local ip
   ip=$(curl -fsS4 --max-time 5 https://ifconfig.me 2>/dev/null || hostname -I | awk '{print $1}')
   echo
-  echo "${C_BOLD}${C_Y}╔════════════════════════════════════════════════════════════╗"
-  if [[ $UI == ru ]]; then
-    echo "║  НЕ ЗАКРЫВАЙ ЭТО ОКНО! Открой НОВЫЙ терминал и проверь:   ║"
-  else
-    echo "║  DO NOT CLOSE THIS WINDOW! Open a NEW terminal and check: ║"
-  fi
-  echo "╚════════════════════════════════════════════════════════════╝${C_0}"
+  warn_box "$(T "НЕ ЗАКРЫВАЙ ЭТО ОКНО! Открой НОВЫЙ терминал и проверь:" \
+                "DO NOT CLOSE THIS WINDOW! Open a NEW terminal and check:")"
   echo
   echo "     ssh -p $SSH_PORT $NEW_USER@$ip"
   if [[ $USER_HAS_PASSWORD == yes ]]; then

@@ -62,6 +62,23 @@ jobs:
           out=$(bash harden.sh 2>&1 </dev/null) && { echo "::error::ran without root"; exit 1; }
           echo "$out" | grep -q 'Run as root'
 
+      - name: The warning frame has straight sides
+        # Found live: the side of the frame stood one column short of its corners. Under
+        # LANG=C bash counts bytes and Cyrillic is two bytes a letter, so both are tried.
+        run: |
+          for loc in C C.UTF-8; do
+            for lang in ru en; do
+              out=$(LC_ALL=$loc HARDEN_UI=$lang bash -c 'source ./harden.sh; UI=$HARDEN_UI
+                warn_box "$(T "НЕ ЗАКРЫВАЙ ЭТО ОКНО! Открой НОВЫЙ терминал и проверь:" "DO NOT CLOSE THIS WINDOW! Open a NEW terminal and check:")"')
+              echo "$out"
+              test "$(echo "$out" | wc -l)" = 3
+              widths=$(echo "$out" | sed 's/\x1b\[[0-9;]*m//g; s/\x1b(B//g' \
+                | while IFS= read -r l; do printf '%s' "$l" | LC_ALL=C.UTF-8 wc -m; done | sort -u)
+              echo "$loc $lang: width $widths"
+              test "$(echo "$widths" | wc -l)" = 1 || { echo "::error::the frame is crooked ($loc, $lang)"; exit 1; }
+            done
+          done
+
       - name: --check runs to the end and fails an unhardened runner
         # Under set -e any unguarded failing probe would abort before the summary line.
         run: |
