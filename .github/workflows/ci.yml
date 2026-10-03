@@ -777,3 +777,38 @@ jobs:
       - uses: actions/checkout@v5
       - name: Runs to the end, creates nothing, and does not mistake "cannot look" for "broken"
         run: docker run --rm -v "$PWD:/w:ro" "${{ matrix.image }}" bash /w/tools/ci-check-in-container.sh
+
+  e2e:
+    name: Full setup in a VM (${{ matrix.name }})
+    # Everything above tests the script piece by piece. This runs all of it, on a cloud
+    # image under QEMU/KVM, the way a person would on a fresh VPS — see tools/e2e.py.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: ubuntu-24.04
+            image: https://cloud-images.ubuntu.com/releases/24.04/release/ubuntu-24.04-server-cloudimg-amd64.img
+          - name: ubuntu-22.04
+            image: https://cloud-images.ubuntu.com/releases/22.04/release/ubuntu-22.04-server-cloudimg-amd64.img
+          - name: ubuntu-26.04
+            image: https://cloud-images.ubuntu.com/releases/26.04/release/ubuntu-26.04-server-cloudimg-amd64.img
+          - name: debian-12
+            image: https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-genericcloud-amd64.qcow2
+          - name: debian-13
+            image: https://cloud.debian.org/images/cloud/trixie/latest/debian-13-genericcloud-amd64.qcow2
+    steps:
+      - uses: actions/checkout@v5
+      - name: Tools
+        run: |
+          sudo apt-get update -q >/dev/null
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -q qemu-system-x86 qemu-utils cloud-image-utils python3-pexpect >/dev/null
+          ls -l /dev/kvm
+      - name: Cloud image
+        run: curl -fsSL --retry 3 -o base.img "${{ matrix.image }}"
+      - name: The whole setup, a reboot, and the setup once more
+        run: python3 -u tools/e2e.py base.img "${{ matrix.name }}"
+      - name: What the machine printed (on failure)
+        if: failure()
+        run: sudo tail -n 120 e2e-work/serial.log || true
