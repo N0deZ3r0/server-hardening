@@ -300,11 +300,13 @@ jobs:
           test "$(sysctl -n fs.suid_dumpable)" = 0
 
       - name: Socket-activated sshd, as on an Ubuntu 24.04 cloud image — the switch to the plain service
-        # Found live. `systemctl enable ssh.service` adds the alias sshd.service; where
-        # something already refers to that name (cloud-init does) systemd then reads the
-        # running, socket-activated daemon's unit as inactive and still names the daemon as
-        # MainPID. The setup trusted that, spared the daemon, and the new one could not
-        # bind port 22: versions 2026.10.8 to 2026.10.17 rolled back at this step.
+        # Found live: systemd had the socket-activated daemon's unit down as inactive
+        # while the daemon was running, the setup spared it as the unit's main process,
+        # and the new daemon could not bind port 22 — versions 2026.10.8 to 2026.10.17
+        # rolled back at this step. How systemd got there was not established; this runner
+        # keeps the unit active through the same commands. So the two orders are run here
+        # for what they must produce, and the case that has teeth whatever systemd does —
+        # a MainPID that names the leftover — is in the next step.
         run: |
           set -x
           sudo ssh-keygen -A
@@ -346,8 +348,8 @@ jobs:
           sudo bash -c 'source ./harden.sh; CURRENT_SSH_PORTS=22; restart_sshd 22 2223' > switch.out 2>&1 || true
           switched
 
-          # 2. The state the old order left behind: the units are switched while the daemon
-          #    is running. Whatever systemd makes of it, the switch has to come out right.
+          # 2. The old order: the units are switched while the daemon is running. Whatever
+          #    systemd makes of that, the switch has to come out right.
           fresh_image
           sudo systemctl disable ssh.socket
           sudo systemctl enable ssh.service

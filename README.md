@@ -24,7 +24,7 @@ summary, can report to Telegram, and finishes with a Lynis audit. Later, `sudo h
 audits the server without changing anything. The interface is in English and Russian.
 
 ```bash
-curl -fsSLo harden.sh https://github.com/N0deZ3r0/server-hardening/releases/download/v2026.10.18/harden.sh && echo "67ce5f0612a03b028b94ae34b976b4e21249655b3aff3ad214e6bde0bc2f6379  harden.sh" | sha256sum -c - && sudo bash harden.sh
+curl -fsSLo harden.sh https://github.com/N0deZ3r0/server-hardening/releases/download/v2026.10.18/harden.sh && echo "08dd41a9a738a733cd90a4a0bc588f87ff10c4ac230b31e353b7bfca2cdca46a  harden.sh" | sha256sum -c - && sudo bash harden.sh
 ```
 
 The command downloads a fixed release and checks its SHA-256 before running it: if a single
@@ -301,7 +301,7 @@ On a server that is already set up, put the newer script in place of the old one
 download and checksum, without running the setup:
 
 ```bash
-curl -fsSLo harden.sh https://github.com/N0deZ3r0/server-hardening/releases/download/v2026.10.18/harden.sh && echo "67ce5f0612a03b028b94ae34b976b4e21249655b3aff3ad214e6bde0bc2f6379  harden.sh" | sha256sum -c - && sudo install -m 755 harden.sh /usr/local/sbin/harden
+curl -fsSLo harden.sh https://github.com/N0deZ3r0/server-hardening/releases/download/v2026.10.18/harden.sh && echo "08dd41a9a738a733cd90a4a0bc588f87ff10c4ac230b31e353b7bfca2cdca46a  harden.sh" | sha256sum -c - && sudo install -m 755 harden.sh /usr/local/sbin/harden
 ```
 
 That replaces the commands — `--check`, `--ping`, `--lang`, `--setup-telegram` — and leaves
@@ -346,11 +346,11 @@ Knowingly open, with the reason for each:
   run on each. Only `--check` is run on every supported release, in a container in CI.
 - **Versions 2026.10.8 to 2026.10.17 could not finish a setup on an Ubuntu 24.04 cloud
   image.** They stopped at the SSH switch and rolled back: access was never lost, and the
-  setup was never completed. The script spared the process systemd named as the SSH
-  unit's main one; after `systemctl enable ssh.service` systemd had that unit down as
-  inactive and still named its old, running listener — so the one daemon that had to go
-  kept port 22. Which daemon may stay is no longer taken from systemd, the units are
-  switched only after sshd has been stopped, and both are replayed in CI. The last
+  setup was never completed. systemd had the SSH unit down as inactive while its listener
+  was still running, and the script spared that listener as the unit's main process — so
+  the one daemon that had to go kept port 22. How systemd got into that state was not
+  established. Which daemon may stay is no longer taken from systemd, success is read
+  from the socket table, and CI runs the case of a main process that is the leftover. The last
   complete run from a clean image was version 2026.10.7; **the fixed version has not
   been run from a clean image yet.**
 - **Live runs are on one server** (Ubuntu 24.04, KVM): the full setup from a clean image,

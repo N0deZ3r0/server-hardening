@@ -1367,10 +1367,12 @@ sshd_listener_pids() {  # sshd_listener_pids port
 # been stopped, when nothing of sshd's may listen there any more.
 #
 # It used to spare the process systemd names as the unit's MainPID. That is the bug a live
-# run found: on a cloud image systemd had the unit down as inactive and still named its
-# old, running listener as MainPID — so the one daemon that had to go was the one spared,
-# it kept port 22, and the new daemon could not bind it. Versions 2026.10.8 to 2026.10.17
-# rolled back at this step on such images.
+# run found. On a cloud image systemd had the unit down as inactive while its listener was
+# still running: the journal shows no stop of the unit, then "Found left-over process" at
+# the start. The listener was not stopped here, which this code did for one pid only — the
+# one reported as MainPID. So the one daemon that had to go was the one spared, it kept
+# port 22, and the new daemon could not bind it. Versions 2026.10.8 to 2026.10.17 rolled
+# back at this step on such an image.
 #
 # Sessions are untouched: they are separate processes and hold no listening socket on
 # these ports (their X11 listeners on 127.0.0.1:60xx are not SSH ports and are not asked for).
@@ -1437,12 +1439,13 @@ ensure_ssh_killmode() {
 # the admin's own session survives the stop.
 #
 # Ubuntu 22.10+ starts sshd through ssh.socket, which ignores Port, so the first call also
-# turns socket activation off and the plain service on. The order matters, and a live run
-# paid for getting it wrong: `systemctl enable ssh.service` adds the alias sshd.service, and
-# where something already refers to that name — cloud-init does — systemd then reads the
-# running daemon's unit as inactive. `systemctl stop` is a no-op on such a unit and the old
-# listener stays. So: stop first, while systemd still knows what it is stopping, and switch
-# the units only when nothing of sshd's is listening.
+# turns socket activation off and the plain service on — after sshd has been stopped, not
+# before. On the live server the units had been switched with the daemon running, and
+# moments later systemd had the unit down as inactive with the daemon alive. Whether the
+# switch caused that was not established (the same order leaves the unit active on a CI
+# runner); there is simply no reason to change units under a running daemon. What makes
+# the restart safe either way is below: every sshd left on the ports is stopped, whatever
+# systemd believes, and success is read from the socket table.
 restart_sshd() {  # restart_sshd port... — the ports the new daemon must end up bound to
   local svc
   svc=$(ssh_service)
@@ -1461,6 +1464,9 @@ restart_sshd() {  # restart_sshd port... — the ports the new daemon must end u
     ss -Hltn 2>/dev/null | grep -qE ":($(tr ' ' '|' <<<"$*"))[[:space:]]" || break
     sleep 0.5
   done
+  # A unit that failed or was restarted a few times in a row (a setup run again after a
+  # rollback) may be refused by systemd's start limit
+  systemctl reset-failed "$svc" &>/dev/null || true
   if ! systemctl start "$svc"; then
     sshd_port_report "$@"
     return 1
