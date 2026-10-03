@@ -123,18 +123,25 @@ jobs:
           # The merged-login mark must survive the bare environment a systemd unit runs in
           sudo env -i /usr/local/sbin/harden-notify "probe ×2"
           grep -F 'probe ×2' tg.log
-          # DEBUG (temporary): trace the watcher itself on this runner
+          # DEBUG (temporary): who loses lines — journalctl or bash read -t?
           sudo systemctl stop harden-login-watch
-          sudo bash -x /usr/local/sbin/harden-login-watch > watch.trace 2>&1 &
+          sudo journalctl -f -n 0 -o cat SYSLOG_IDENTIFIER=sshd > j_plain.out 2>&1 &
+          sudo bash -c 'journalctl -f -n 0 -o cat SYSLOG_IDENTIFIER=sshd | while IFS= read -r l; do echo "R: $l"; done' > j_read.out 2>&1 &
+          sudo bash -c 'journalctl -f -n 0 -o cat SYSLOG_IDENTIFIER=sshd | while :; do if IFS= read -r -t 1 l; then echo "T: $l"; elif [ $? -le 128 ]; then break; fi; done' > j_readt.out 2>&1 &
           sleep 3
-          logger -t sshd "Accepted key ED25519 SHA256:dbg found at /home/alex/.ssh/authorized_keys:1"
-          logger -t sshd "Accepted publickey for alex from 198.51.100.9 port 5555 ssh2: ED25519 SHA256:dbg"
-          logger -t sshd "Accepted publickey for alex from 198.51.100.9 port 5556 ssh2: ED25519 SHA256:dbg"
-          logger -t sshd "Accepted publickey for alex from 198.51.100.10 port 6000 ssh2: ED25519 SHA256:dbg"
-          sleep 6
-          sudo pkill -f 'bash -x /usr/local/sbin/harden-login-watch' || true
+          for n in 1 2 3 4; do logger -t sshd "dbg line $n"; done
+          sleep 4
+          sudo pkill journalctl || true
           set +x
-          echo "=== bash: $BASH_VERSION"; echo "=== watch.trace"; grep -nvE "^\+ (IFS=|read -r -t 1 line)$" watch.trace | cut -c1-170 | head -90
+          echo "=== journalctl alone:"; cat j_plain.out
+          echo "=== while read:"; cat j_read.out
+          echo "=== while read -t 1:"; cat j_readt.out
+          echo "=== feed without journalctl, read -t 1:"
+          { sleep 2; printf 'a1
+a2
+a3
+a4
+'; sleep 2; } | while :; do if IFS= read -r -t 1 l; then echo "T: $l"; elif [ $? -le 128 ]; then break; fi; done
           set -x
           sudo systemctl start harden-login-watch
           # Every SSH login is reported, read from the journal — and only logins. The first
