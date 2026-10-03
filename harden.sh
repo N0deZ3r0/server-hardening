@@ -39,7 +39,7 @@ set -Eeuo pipefail
 # explicitly where it is written.
 umask 022
 
-HARDEN_VERSION="2026.10.24"
+HARDEN_VERSION="2026.10.25"
 LOG_FILE="/var/log/harden.log"
 REPORT_FILE="/root/harden-report.txt"
 BACKUP_DIR="/root/harden-backup-$(date +%Y%m%d-%H%M%S)"
@@ -208,6 +208,13 @@ relaunch_in_tmux() {
   info "$(T "Запускаю внутри tmux. Если SSH оборвётся — зайди снова и выполни: tmux attach -t harden" \
             "Running inside tmux. If SSH drops, log in again and run: tmux attach -t harden")"
   sleep 2
+  # tmux refuses to start on a terminal type this server has no description of ("missing
+  # or unsuitable terminal") — kitty, ghostty and others on a fresh image — and the setup
+  # ended right there, with that line for an explanation. They all speak xterm's language,
+  # so tmux is told that instead.
+  if [[ -z ${TERM:-} ]] || { command -v infocmp >/dev/null && ! infocmp "$TERM" &>/dev/null; }; then
+    export TERM=xterm-256color
+  fi
   exec tmux new-session -A -s harden bash -c "$inner"
 }
 
@@ -241,7 +248,7 @@ backup_originals() {
   local bf
   mkdir -p "$BACKUP_DIR"
   if [[ -d /etc/ssh ]]; then cp -a /etc/ssh "$BACKUP_DIR/ssh"; fi
-  for bf in /etc/login.defs /etc/issue /etc/issue.net /etc/apt/apt.conf.d/20auto-upgrades \
+  for bf in /etc/login.defs /etc/issue /etc/issue.net /etc/motd /etc/apt/apt.conf.d/20auto-upgrades \
             /etc/default/apport /etc/default/sysstat /etc/default/motd-news; do
     # mkdir + cp, not `cp --parents`: that fails with "No such file or directory" in
     # coreutils 9.1, which is what Debian 12 has — the setup stopped right here on it
@@ -270,7 +277,9 @@ preflight() {
 
   echo "${C_BOLD}Server hardening v$HARDEN_VERSION — $OS_NAME (virt: $VIRT)${C_0}"
   if [[ -z ${TMUX:-} && -z ${STY:-} ]]; then
-    warn "$(T "tmux/screen не найден: обрыв SSH прервёт настройку (apt install tmux)." "tmux/screen not found: a dropped SSH session will abort the run (apt install tmux).")"
+    # Said as what it is: this is reached with tmux installed too (HARDEN_NO_TMUX, or the
+    # script fed through a pipe), and "not found" was not true then
+    warn "$(T "Настройка идёт не в tmux/screen: обрыв SSH её прервёт." "Not inside tmux/screen: a dropped SSH session will abort the run.")$(command -v tmux >/dev/null || T " Поставить: apt install tmux" " To get it: apt install tmux")"
   fi
 
   # The provider's cloud-init may run a full apt upgrade (GRUB and kernel included) and
@@ -361,17 +370,25 @@ collect_answers() {
   elif [[ -n ${GITHUB_KEYS_USER:-} ]]; then
     curl -fsSL "https://github.com/${GITHUB_KEYS_USER}.keys" >"$PUBKEY_FILE" || true
   fi
+  # Where the admin came in through another account and sudo (AWS, Oracle, Azure), the key
+  # that works is in that account's file: root's there carries a forced command ("Please
+  # login as the user…") and is skipped, being a line that does not start with a key.
+  local key_from=/root/.ssh/authorized_keys
+  if [[ -n ${SUDO_USER:-} && $SUDO_USER != root ]]; then key_from+=" $(home_of "$SUDO_USER")/.ssh/authorized_keys"; fi
   while ! check_pubkeys "$PUBKEY_FILE"; do
     echo
     T "Откуда взять публичный SSH-ключ?" "Where should the public SSH key come from?"; echo
     T "  1) Вставить вручную (строка из ~/.ssh/id_ed25519.pub)" "  1) Paste it (the line from ~/.ssh/id_ed25519.pub)"; echo
     T "  2) Загрузить с GitHub (https://github.com/<ник>.keys)" "  2) Fetch from GitHub (https://github.com/<user>.keys)"; echo
-    T "  3) Скопировать из /root/.ssh/authorized_keys" "  3) Copy from /root/.ssh/authorized_keys"; echo
+    T "  3) Скопировать из ${key_from// /, }" "  3) Copy from ${key_from// /, }"; echo
     ask "$(T "Выбор" "Choice")" "1"
     case $REPLY in
       2) ask "$(T "Ник на GitHub" "GitHub username")"
          curl -fsSL "https://github.com/${REPLY}.keys" >"$PUBKEY_FILE" || warn "$(T "Не удалось скачать ключи" "Could not download the keys")" ;;
-      3) cp /root/.ssh/authorized_keys "$PUBKEY_FILE" 2>/dev/null || warn "$(T "У root нет authorized_keys" "root has no authorized_keys")" ;;
+      3)
+         # shellcheck disable=SC2086  # a list of paths
+         cat $key_from 2>/dev/null | awk '!seen[$0]++' >"$PUBKEY_FILE" || true
+         [[ -s $PUBKEY_FILE ]] || warn "$(T "Там нет ключей:" "No keys there:") ${key_from// /, }" ;;
       *) echo "$(T "Создать ключ на СВОЁМ компьютере:" "Create a key on YOUR computer:")  ssh-keygen -t ed25519 -C \"$NEW_USER@server\""
          ask "$(T "Вставь публичный ключ (ssh-ed25519 AAAA...)" "Paste the public key (ssh-ed25519 AAAA...)")"
          # A paste of several lines (PuTTYgen's "SSH2 PUBLIC KEY" block, a private key)
@@ -638,7 +655,8 @@ lock_other_users() {
   local u f g
   for u in $OTHER_USERS; do
     # the shell and the groups taken away, for --undo
-    printf '%s\t%s\t%s\n' "$u" "$(getent passwd "$u" | cut -d: -f7)" \
+    f=$(getent passwd "$u" | cut -d: -f7)   # empty means /bin/sh, and an empty field would shift the next one
+    printf '%s\t%s\t%s\n' "$u" "${f:-/bin/sh}" \
       "$(id -nG "$u" 2>/dev/null | tr ' ' '\n' | grep -xE 'sudo|adm|lxd|docker' | paste -sd' ' - || true)" \
       >>"$BACKUP_DIR/locked-users.tsv"
     usermod -L -s /usr/sbin/nologin "$u"
@@ -705,6 +723,14 @@ EOF
   return 0
 }
 
+# note_if_enabled unit — the name of a unit that is enabled now goes into the backup:
+# --undo turns back on what the setup switched off, and only what was on before it.
+note_if_enabled() {
+  [[ $(systemctl is-enabled "$1" 2>/dev/null || true) == enabled* ]] || return 1
+  mkdir -p "$BACKUP_DIR"
+  echo "$1" >>"$BACKUP_DIR/disabled-services"
+}
+
 # Ubuntu's crash reporter. Every time it starts — so at every boot, after sysctl.d has
 # been applied — it sets fs.suid_dumpable=2 and points kernel.core_pattern at itself,
 # which turns memory dumps of privileged programs back on. Seen live: the audit passed
@@ -716,6 +742,7 @@ disable_apport() {
   # script, and `disable --now` on such a unit skips the stop when the disable half fails
   # — it stayed active through exactly that in CI. The mask is what holds across boots.
   for u in apport.service apport-autoreport.path apport-autoreport.timer apport-forward.socket; do
+    note_if_enabled "$u" || true
     systemctl stop "$u" &>/dev/null || true
     systemctl disable "$u" &>/dev/null || true
   done
@@ -894,7 +921,9 @@ EOF
   # Services a server does not need
   local svc
   for svc in ModemManager udisks2; do
-    systemctl list-unit-files "$svc.service" &>/dev/null && systemctl disable --now "$svc.service" &>/dev/null \
+    # Only what is on now — said once, not at every refresh
+    note_if_enabled "$svc.service" || systemctl is-active --quiet "$svc.service" 2>/dev/null || continue
+    systemctl disable --now "$svc.service" &>/dev/null \
       && info "$(T "Отключена служба" "Disabled service") $svc" || true
   done
 
@@ -996,8 +1025,19 @@ setup_firewall() {
   # The admin is not rate-limited: this rule has to precede the limit rule, since UFW stops
   # at the first match. prepend, not a plain allow — on a re-run with a new address a plain
   # allow landed after the limit rule that was already there, and did nothing.
+  # The exception an earlier run made goes first: set up again from another address, or
+  # with another port, the old rule stayed for good.
+  local rule
+  while read -r rule; do
+    # shellcheck disable=SC2086  # a rule the way ufw prints it: words, to be split
+    ufw delete $rule >/dev/null 2>&1 || true
+  done < <(ufw show added 2>/dev/null | sed -n "s/^ufw \(allow from .*\) comment 'SSH admin'\$/\1/p")
   if [[ -n $ADMIN_IP ]]; then
-    ufw prepend allow from "$ADMIN_IP" to any port "$SSH_PORT" proto tcp comment 'SSH admin' >/dev/null
+    # UFW's refusal (an IPv6 address with IPv6 switched off in UFW, say) costs the exception,
+    # not the setup: the limit rule below lets the admin in all the same
+    ufw prepend allow from "$ADMIN_IP" to any port "$SSH_PORT" proto tcp comment 'SSH admin' >/dev/null 2>&1 \
+      || warn "$(T "UFW не принял правило для $ADMIN_IP — вход с него ограничен по частоте, как для всех" \
+                   "UFW refused the rule for $ADMIN_IP — logins from it are rate-limited like everyone's")"
   fi
   ufw limit "$SSH_PORT/tcp" comment 'SSH' >/dev/null
   local -a extra
@@ -1161,7 +1201,11 @@ if [ "${UPDATES:-0}" -gt 0 ]; then kv "Updates" "${RED}${UPDATES}${NC}"; else kv
 line "----------------------------------------"
 kv "CPU"      "$(nproc) cores"
 kv "RAM"      "${RAM_TOTAL} MB total, ${RAM_AVAIL} MB free ($(pct $(( RAM_AVAIL * 100 / (RAM_TOTAL > 0 ? RAM_TOTAL : 1) ))))"
-kv "Disk /"   "${DISK_SIZE} total, ${DISK_AVAIL} free ($(pct $(( 100 - ${DISK_USED%\%} ))))"
+# df prints "-" for a root it cannot size (some containers): no percentage then, rather
+# than an arithmetic error at every login
+DISK_PCT=${DISK_USED%\%}
+case $DISK_PCT in ''|*[!0-9]*) DISK_FREE="" ;; *) DISK_FREE=" ($(pct $(( 100 - DISK_PCT ))))" ;; esac
+kv "Disk /"   "${DISK_SIZE:-?} total, ${DISK_AVAIL:-?} free${DISK_FREE}"
 kv "Gateway"  "$(ip route show default 2>/dev/null | awk '{print $3; exit}')"
 line "----------------------------------------"
 if grep -qs '^ENABLED=yes' /etc/ufw/ufw.conf; then printf " %-10s %b\n" ufw "${GREEN}✓${NC}"
@@ -1205,9 +1249,10 @@ HOOK_EOF
   touch /etc/skel/.sudo_as_admin_successful /etc/skel/.cache/motd.legal-displayed
   while IFS=: read -r u _ _ _ _ home _; do
     [[ -d $home && $home == /home/* ]] || continue
-    [[ -d $home/.cache ]] || install -d -m 700 -o "$u" -g "$(id -gn "$u")" "$home/.cache"
-    install -o "$u" -g "$(id -gn "$u")" -m 644 /dev/null "$home/.sudo_as_admin_successful"
-    install -o "$u" -g "$(id -gn "$u")" -m 644 /dev/null "$home/.cache/motd.legal-displayed"
+    # As that user, not as root: written by root, a file in a directory someone else owns
+    # lands wherever a symlink there points (~/.cache -> /etc/…), and comes out owned by them
+    runuser -u "$u" -- sh -c 'cd "$1" && mkdir -p -m 700 .cache && : >.sudo_as_admin_successful && : >.cache/motd.legal-displayed' \
+      sh "$home" </dev/null &>/dev/null || true
   done < <(awk -F: '$3>=1000 && $3<60000' /etc/passwd)
   ok "$(T "Сводка будет показываться при входе вместо стандартного приветствия. Вручную: server-status" \
           "The summary replaces the stock login greeting. Run it any time: server-status")"
@@ -1290,12 +1335,14 @@ setup_crowdsec() {
   rm -f /etc/crowdsec/parsers/s02-enrich/99-harden-admin-whitelist.yaml
   if [[ -n $ADMIN_IP ]]; then
     mkdir -p /etc/crowdsec/parsers/s02-enrich
+    # A network (203.0.113.0/24) goes under "cidr": under "ip" it is read as one address,
+    # does not parse, and whitelists nothing
     cat >/etc/crowdsec/parsers/s02-enrich/99-harden-admin-whitelist.yaml <<EOF
 name: harden/admin-whitelist
 description: "Admin IP whitelisted by harden.sh"
 whitelist:
   reason: "admin ip (harden.sh)"
-  ip:
+  $([[ $ADMIN_IP == */* ]] && echo cidr || echo ip):
     - "$ADMIN_IP"
 EOF
   fi
@@ -1326,17 +1373,43 @@ filter_algos() {  # filter_algos <ssh -Q type> algorithms... -> the supported on
 
 ssh_service() { systemctl list-unit-files ssh.service &>/dev/null && echo ssh || echo sshd; }
 
-# write_sshd_config "port1 port2 ..." [new-port]
+# The lines of our own SSH file that decide who gets in, as the last finished run left
+# them. Empty on a server that has not been set up, or whose setup stopped half-way.
+ssh_access_in_force() {
+  [[ -f $SSHD_DROPIN ]] || return 0
+  awk '$1=="Match"{exit}
+       /^(PermitRootLogin|AllowUsers|AuthenticationMethods|PasswordAuthentication|KbdInteractiveAuthentication)[[:space:]]/' \
+    "$SSHD_DROPIN" 2>/dev/null || true
+}
+
+# write_sshd_config "port1 port2 ..." [new-port [rules-in-force]]
 # With a second argument the rules that decide who gets in — no root, keys only, the named
 # users — are written for that port alone (a Match block), and every other port keeps the
 # rules it had. That is the first stage of the switch: until the admin has logged in on the
 # new port, the old one is not just open, it still lets them in the old way. Before, both
 # ports got the new rules at once, and if the new key turned out not to work and the
 # session dropped, the only way back was the provider's console.
+#
+# The third argument is what ssh_access_in_force found: on a server this script has set up
+# before, "the rules the old port had" are the ones in our own file, not the provider's
+# sshd_config underneath it. Written without them, a second run with another port let
+# passwords in on the old port again for as long as the question stood on the screen. And
+# where the new port is the one sshd is on already, there is no other port to keep the old
+# way in on — so the accounts that could log in stay allowed until the login is confirmed.
 write_sshd_config() {
-  local ports=$1 only_on=${2:-} p kex ciphers macs hostkeys access
+  local ports=$1 only_on=${2:-} keep=${3:-} p kex ciphers macs hostkeys access allow
+  local -a had_users=()
+  allow="$NEW_USER${SSH_EXTRA_USERS:+ $SSH_EXTRA_USERS}"
+  if [[ -n $only_on && -n $keep && " ${CURRENT_SSH_PORTS:-} " == *" $only_on "* ]]; then
+    # read into an array, not split from $(...): a pattern someone has put into AllowUsers
+    # by hand must not be expanded against the files of the current directory
+    mapfile -t had_users < <(awk '$1=="AllowUsers"{for (i = 2; i <= NF; i++) print $i}' <<<"$keep")
+    for p in "${had_users[@]}"; do
+      [[ " $allow " == *" $p "* ]] || allow+=" $p"
+    done
+  fi
   access="PermitRootLogin no
-AllowUsers $NEW_USER${SSH_EXTRA_USERS:+ $SSH_EXTRA_USERS}
+AllowUsers $allow
 AuthenticationMethods publickey
 PasswordAuthentication no
 KbdInteractiveAuthentication no"
@@ -1357,7 +1430,12 @@ HostKey /etc/ssh/ssh_host_rsa_key
 
 # --- Authentication: keys only, no root ---
 EOF
-    if [[ -z $only_on ]]; then echo "$access"; fi
+    if [[ -z $only_on ]]; then
+      echo "$access"
+    elif [[ -n $keep ]]; then
+      echo "# as the previous run left them: in force on the old port until the new one is confirmed"
+      echo "$keep"
+    fi
     cat <<EOF
 PubkeyAuthentication yes
 PermitEmptyPasswords no
@@ -1627,9 +1705,10 @@ setup_ssh() {
   # plain service is made inside restart_sshd, after sshd has been stopped — see there.
 
   # Stage 1: old and new port side by side — the new rules on the new port only
-  local ports="$CURRENT_SSH_PORTS"
+  local ports="$CURRENT_SSH_PORTS" had
+  had=$(ssh_access_in_force)
   [[ " $ports " == *" $SSH_PORT "* ]] || ports="$ports $SSH_PORT"
-  write_sshd_config "$ports" "$SSH_PORT"
+  write_sshd_config "$ports" "$SSH_PORT" "$had"
   if ! sshd -t; then rollback_ssh; die "$(T "Конфиг sshd не прошёл проверку — откатил." "sshd config failed the check — rolled back.")"; fi
   # shellcheck disable=SC2086
   restart_sshd $ports || { rollback_ssh; die "$(T "sshd не перезапустился — откатил." "sshd did not restart — rolled back.")"; }
@@ -1770,7 +1849,15 @@ final_report() {
   fi
   if [[ -f /var/run/reboot-required ]]; then
     echo
-    warn "$(T "Нужна перезагрузка: установлено новое ядро" "Reboot needed: a new kernel is installed") ($(uname -r) -> $(ls -1 /boot/vmlinuz-* | sort -V | tail -1 | sed 's|.*/vmlinuz-||'))"
+    # reboot-required is also left by libc, systemd and others; "a new kernel" with the
+    # same version on both sides of the arrow explained nothing
+    local newest
+    newest=$(ls -1 /boot/vmlinuz-* 2>/dev/null | sort -V | tail -1 | sed 's|.*/vmlinuz-||' || true)
+    if [[ -n $newest && $newest != "$(uname -r)" ]]; then
+      warn "$(T "Нужна перезагрузка: установлено новое ядро" "Reboot needed: a new kernel is installed") ($(uname -r) -> $newest)"
+    else
+      warn "$(T "Нужна перезагрузка: обновлены системные компоненты" "Reboot needed: system components were updated")"
+    fi
     if env_yn REBOOT_NOW "$(T "Перезагрузить сейчас? (после — входи: ssh -p $SSH_PORT $NEW_USER@<IP>)" \
                               "Reboot now? (then log in: ssh -p $SSH_PORT $NEW_USER@<IP>)")" y; then
       # Never reboot in the middle of a package install (GRUB/kernel).
@@ -2236,6 +2323,14 @@ save_answers() {
   chmod 600 "$STATE_FILE"
 }
 
+# A choice changed after the setup by one of the small commands (--ping, --setup-telegram,
+# --install-status) is recorded with the answers, or --answers would go on printing the old one.
+set_saved_answer() {  # set_saved_answer VAR yes|no
+  [[ -f $STATE_FILE ]] || return 0
+  if grep -q "^$1=" "$STATE_FILE"; then sed -i "s|^$1=.*|$1=$2|" "$STATE_FILE"
+  else echo "$1=$2" >>"$STATE_FILE"; fi
+}
+
 shq() { printf "'%s'" "${1//\'/\'\\\'\'}"; }   # 'a value', safe to paste into a shell
 
 # The command that repeats the setup with the same answers. What is still asked then: the
@@ -2300,8 +2395,15 @@ load_answers() {
 # Accounts, SSH and the firewall are left as they are: those are the parts where a mistake
 # costs access, and they change only in the full setup, with its login check.
 run_refresh() {
-  local api
+  local api v hook=/etc/profile.d/99-server-status.sh keep_hook=yes
   load_answers
+  # What was switched by hand after the setup stays the way it is. The saved answers are
+  # those of the setup: going by them, a refresh turned ping back on after `--ping off`,
+  # brought back the login hook removed the way its own first line says, and moved the
+  # daily report back to 09:00.
+  DISABLE_PING=no; [[ -e $PING_SYSCTL ]] && DISABLE_PING=yes
+  [[ -x /usr/local/bin/server-status ]] || SERVER_STATUS=no
+  [[ -e $hook ]] || keep_hook=no
   VIRT=$(systemd-detect-virt 2>/dev/null || echo none)
   IS_CONTAINER=no
   systemd-detect-virt -cq 2>/dev/null && IS_CONTAINER=yes
@@ -2311,6 +2413,7 @@ run_refresh() {
   backup_originals
   harden_system
   install_server_status
+  [[ $keep_hook == yes ]] || rm -f "$hook"
   setup_auditd
   setup_autoupdates
   setup_fail2ban
@@ -2321,6 +2424,8 @@ run_refresh() {
     TG_CHAT_ID=$(sed -n 's/^TG_CHAT_ID=//p' /etc/harden/telegram.conf)
     api=$(sed -n 's/^TG_API=//p' /etc/harden/telegram.conf)
     [[ -z $api ]] || HARDEN_TG_API=$api
+    v=$(sed -n 's/^OnCalendar=\*-\*-\* //p' /etc/systemd/system/harden-daily-report.timer 2>/dev/null || true)
+    [[ -z $v ]] || TG_REPORT_TIME=$v
     install_notifications
   fi
   install_self "$0"
@@ -2409,7 +2514,9 @@ run_undo() {
       usermod -U "$u" 2>/dev/null || true
       for g in $groups; do gpasswd -a "$u" "$g" &>/dev/null || true; done
       f=$(home_of "$u")
-      if [[ -f $b/authorized_keys.$u && -d $f/.ssh ]]; then cp -a "$b/authorized_keys.$u" "$f/.ssh/authorized_keys"; fi
+      if [[ -f $b/authorized_keys.$u && -d $f/.ssh ]]; then
+        cp -a --remove-destination "$b/authorized_keys.$u" "$f/.ssh/authorized_keys"   # never through a symlink
+      fi
       ok "$u $(T "разблокирован" "unlocked")"
     done <"$b/locked-users.tsv"
   done
@@ -2419,7 +2526,7 @@ run_undo() {
   done
 
   # System files the setup replaced or edited
-  for f in login.defs issue issue.net apt/apt.conf.d/20auto-upgrades default/apport default/sysstat default/motd-news; do
+  for f in login.defs issue issue.net motd apt/apt.conf.d/20auto-upgrades default/apport default/sysstat default/motd-news; do
     if [[ -e $first/etc/$f ]]; then cp -a "$first/etc/$f" "/etc/$f"; fi
   done
   for b in "${dirs[@]}"; do
@@ -2439,7 +2546,9 @@ run_undo() {
         /etc/security/pwquality.conf.d/99-hardening.conf /etc/sudoers.d/99-hardening /etc/logrotate.d/harden-sudo \
         /etc/audit/rules.d/99-hardening.rules /etc/needrestart/conf.d/99-hardening.conf \
         /etc/apt/apt.conf.d/52-hardening-unattended /etc/apt/apt.conf.d/53-hardening-crowdsec \
-        "$F2B_JAIL" /usr/local/bin/server-status /etc/profile.d/99-server-status.sh
+        "$F2B_JAIL" /usr/local/bin/server-status /etc/profile.d/99-server-status.sh \
+        /etc/skel/.sudo_as_admin_successful /etc/skel/.cache/motd.legal-displayed
+  rmdir /etc/skel/.cache 2>/dev/null || true
   if [[ $(cat /etc/fail2ban/fail2ban.local 2>/dev/null) == $'[DEFAULT]\nallowipv6 = auto' ]]; then rm -f /etc/fail2ban/fail2ban.local; fi
   visudo -cq || warn "$(T "sudoers: проверь /etc/sudoers.d" "sudoers: check /etc/sudoers.d")"
   # the stock login greeting
@@ -2461,6 +2570,15 @@ run_undo() {
   chmod 644 /etc/crontab 2>/dev/null || true
   chmod 755 /etc/cron.d /etc/cron.daily /etc/cron.hourly /etc/cron.weekly /etc/cron.monthly 2>/dev/null || true
   systemctl daemon-reload
+  # The services the setup switched off, back on — the ones that were on before it
+  for b in "${dirs[@]}"; do
+    [[ -f $b/disabled-services ]] || continue
+    while read -r u; do
+      [[ $u =~ ^[A-Za-z0-9@_.-]+\.(service|socket|path|timer)$ ]] || continue
+      systemctl unmask "$u" &>/dev/null || true
+      systemctl enable --now "$u" &>/dev/null || true
+    done <"$b/disabled-services"
+  done
   sysctl --system >/dev/null 2>&1 || true
   systemctl restart systemd-journald || true
   if command -v augenrules >/dev/null; then augenrules --load >/dev/null 2>&1 || true; fi
@@ -2510,14 +2628,18 @@ main() {
   choose_language
   case ${1:-} in
     # Only the login summary, for an already hardened server
-    --install-status) save_language; install_server_status; exit 0 ;;
+    --install-status) save_language; SERVER_STATUS=yes; install_server_status; set_saved_answer SERVER_STATUS yes; exit 0 ;;
     --check) run_check || exit 1; exit 0 ;;
     --setup-telegram)
       save_language
       TELEGRAM=yes; ask_telegram; install_notifications
       [[ $TELEGRAM == yes ]] || exit 1
+      set_saved_answer TELEGRAM yes
       exit 0 ;;
-    --ping) save_language; set_ping "${2:-}"; exit 0 ;;
+    --ping)
+      save_language; set_ping "${2:-}"
+      if [[ ${2:-} == off ]]; then set_saved_answer DISABLE_PING yes; else set_saved_answer DISABLE_PING no; fi
+      exit 0 ;;
     --refresh) save_language; run_refresh; exit 0 ;;
     --answers) load_answers; print_answers; exit 0 ;;
     --undo) run_undo; exit 0 ;;

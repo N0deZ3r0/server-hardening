@@ -241,7 +241,13 @@ jobs:
         run: |
           set -x
           ping -c1 -W2 127.0.0.1 >/dev/null
+          # Where a setup has saved its answers, the choice made here is recorded with
+          # them: --answers went on printing the old one
+          sudo install -d -m 700 /etc/harden
+          printf 'NEW_USER=runner\nDISABLE_PING=no\nRUN_LYNIS=yes\n' | sudo tee /etc/harden/setup.conf >/dev/null
           sudo HARDEN_LANG=en bash harden.sh --ping off
+          sudo grep -x 'DISABLE_PING=yes' /etc/harden/setup.conf
+          sudo grep -x 'RUN_LYNIS=yes' /etc/harden/setup.conf
           # A mode that changes the system also remembers the language it ran in.
           test "$(sudo cat /etc/harden/lang)" = en
           test "$(sysctl -n net.ipv4.icmp_echo_ignore_all)" = 1
@@ -262,6 +268,8 @@ jobs:
           test "$(sysctl -n net.ipv4.icmp_echo_ignore_all)" = 1
           if ping -c1 -W2 127.0.0.1 >/dev/null; then echo "::error::UFW turned ping back on"; exit 1; fi
           sudo HARDEN_LANG=en bash harden.sh --ping on
+          sudo grep -x 'DISABLE_PING=no' /etc/harden/setup.conf
+          sudo rm -f /etc/harden/setup.conf
           test "$(sysctl -n net.ipv4.icmp_echo_ignore_all)" = 0
           test ! -e /etc/sysctl.d/99-hardening-ping.conf
           ping -c1 -W2 127.0.0.1 >/dev/null
@@ -296,7 +304,10 @@ jobs:
           sysctl fs.suid_dumpable kernel.core_pattern
           test "$(sysctl -n fs.suid_dumpable)" = 2
           grep -q apport /proc/sys/kernel/core_pattern
-          sudo bash -c 'source ./harden.sh; disable_apport'
+          was=$(systemctl is-enabled apport 2>/dev/null || true)
+          sudo bash -c 'source ./harden.sh; BACKUP_DIR=/root/ci-apport; disable_apport'
+          # what was enabled is noted with the backup: --undo turns it on again
+          if [ "$was" = enabled ]; then sudo grep -x apport.service /root/ci-apport/disabled-services; fi
           test "$(sysctl -n fs.suid_dumpable)" = 0
           if grep -q apport /proc/sys/kernel/core_pattern; then echo "::error::core dumps still go to apport"; exit 1; fi
           test "$(systemctl is-active apport)" != active
@@ -482,6 +493,40 @@ jobs:
           if printf '%s\n' "$on_old" | grep -x 'permitrootlogin no\|allowusers runner\|authenticationmethods publickey'; then
             echo "::error::the old port got the new rules before the login was confirmed"; exit 1
           fi
+          # The setup run again on a server it has set up before, with another port: the
+          # old port keeps the rules of the earlier run — not the provider's sshd_config
+          # underneath, which is what it fell back to — and the new port gets the new ones
+          sudo bash -c 'source ./harden.sh; SSHD_DROPIN=/tmp/ci-sshd.conf; test -z "$(ssh_access_in_force)"'
+          sudo bash -c 'source ./harden.sh; SSHD_DROPIN=/tmp/ci-sshd.conf; NEW_USER=daemon; write_sshd_config 22'
+          sudo bash -c 'source ./harden.sh; SSHD_DROPIN=/tmp/ci-sshd.conf; NEW_USER=runner; CURRENT_SSH_PORTS=22
+            write_sshd_config "22 2231" 2231 "$(ssh_access_in_force)"'
+          sudo /usr/sbin/sshd -t -f /tmp/ci-sshd.conf
+          on_new=$(sudo /usr/sbin/sshd -T -f /tmp/ci-sshd.conf -C user=runner,host=localhost,addr=127.0.0.1,lport=2231)
+          on_old=$(sudo /usr/sbin/sshd -T -f /tmp/ci-sshd.conf -C user=daemon,host=localhost,addr=127.0.0.1,lport=22)
+          printf '%s\n' "$on_old" | grep -x 'passwordauthentication no'
+          printf '%s\n' "$on_old" | grep -x 'permitrootlogin no'
+          printf '%s\n' "$on_old" | grep -x 'authenticationmethods publickey'
+          printf '%s\n' "$on_old" | grep -x 'allowusers daemon'
+          if printf '%s\n' "$on_old" | grep -x 'allowusers runner'; then
+            echo "::error::the old port got the new user before the login was confirmed"; exit 1
+          fi
+          printf '%s\n' "$on_new" | grep -x 'allowusers runner'
+          if printf '%s\n' "$on_new" | grep -x 'allowusers daemon'; then
+            echo "::error::the new port lets in the account of the earlier run"; exit 1
+          fi
+          # ...and with the same port there is no other port to keep the old way in on:
+          # the account that could log in stays allowed until the login is confirmed
+          sudo bash -c 'source ./harden.sh; SSHD_DROPIN=/tmp/ci-sshd.conf; NEW_USER=daemon; write_sshd_config 2231'
+          sudo bash -c 'source ./harden.sh; SSHD_DROPIN=/tmp/ci-sshd.conf; NEW_USER=runner; CURRENT_SSH_PORTS=2231
+            write_sshd_config 2231 2231 "$(ssh_access_in_force)"'
+          sudo /usr/sbin/sshd -t -f /tmp/ci-sshd.conf
+          on_new=$(sudo /usr/sbin/sshd -T -f /tmp/ci-sshd.conf -C user=runner,host=localhost,addr=127.0.0.1,lport=2231)
+          printf '%s\n' "$on_new" | grep -x 'allowusers runner'
+          printf '%s\n' "$on_new" | grep -x 'allowusers daemon'
+          printf '%s\n' "$on_new" | grep -x 'passwordauthentication no'
+          # confirmed: the new user only
+          sudo bash -c 'source ./harden.sh; SSHD_DROPIN=/tmp/ci-sshd.conf; NEW_USER=runner; write_sshd_config 2231'
+          sudo grep -x 'AllowUsers runner' /tmp/ci-sshd.conf
           sudo rm -f /tmp/ci-sshd.conf
           sudo rm -f /etc/ssh/sshd_config.d/00-ci.conf
           sudo systemctl stop ssh
@@ -641,6 +686,23 @@ jobs:
           test "$(stat -c %a /etc/profile.d/99-server-status.sh)" = 644
           test "$(stat -c %a /usr/local/bin/server-status)" = 755
           /usr/local/bin/server-status | grep -E '^ ?(ssh|docker) '
+          # The marker files in users' homes are written as that user. Written by root, one
+          # landed wherever a symlink in that home pointed, owned by the user.
+          sudo useradd -m -s /bin/bash ci-sym
+          sudo mkdir /etc/ci-sym-target
+          # (the first run above put a .cache into /etc/skel, so the new home has one)
+          sudo rm -rf /home/ci-sym/.cache
+          sudo -u ci-sym ln -s /etc/ci-sym-target /home/ci-sym/.cache
+          test -L /home/ci-sym/.cache || sudo test -L /home/ci-sym/.cache
+          sudo rm -f /home/runner/.sudo_as_admin_successful
+          sudo bash -c 'source ./harden.sh; install_server_status' >/dev/null
+          if sudo test -e /etc/ci-sym-target/motd.legal-displayed; then
+            echo "::error::a file was written through a symlink in a user's home"; exit 1
+          fi
+          test "$(stat -c %U /home/runner/.sudo_as_admin_successful)" = runner
+          test -e /home/runner/.cache/motd.legal-displayed
+          sudo userdel -r ci-sym >/dev/null 2>&1 || true
+          sudo rmdir /etc/ci-sym-target
 
       - name: Kernel settings stay in effect after files that load later
         # Found by a Lynis run on a live server: the distribution's 99-protect-links.conf
@@ -781,6 +843,8 @@ jobs:
           limit=$(grep -E '2222/tcp +LIMIT IN +Anywhere' fw2.txt | head -1 | sed -E 's/^\[ *([0-9]+)\].*/\1/')
           echo "admin rule #$admin, limit rule #$limit"
           test "$admin" -lt "$limit"
+          # ...and the exception for the earlier address does not stay behind
+          if grep -F '203.0.113.5' fw2.txt; then echo "::error::the rule for the earlier admin address was left in place"; exit 1; fi
           sudo ufw --force disable
 
   containers:

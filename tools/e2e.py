@@ -39,6 +39,12 @@ OLD = 2222          # host port forwarded to the guest's port 22
 NEW = 2233          # the new SSH port, the same number on host and guest
 GATEWAY = "10.0.2.2"  # how the guest sees this host under QEMU user networking
 
+# The units the setup switches off where they are on, and how each one stands: --undo has
+# to leave them the way they were found.
+UNITS_PROBE = ("for u in apport.service apport-autoreport.path apport-autoreport.timer apport-forward.socket "
+               "ModemManager.service udisks2.service; do "
+               "echo \"$u: $(systemctl is-enabled $u 2>/dev/null)\"; done")
+
 SSH = ["-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null",
        "-o", "LogLevel=ERROR", "-o", "ConnectTimeout=10", "-o", "IdentitiesOnly=yes",
        "-i", str(KEY)]
@@ -148,14 +154,14 @@ def answers(pub, tmux=False, **more):
     return " ".join(f"{k}={shlex.quote(v)}" for k, v in env.items())
 
 
-def drive(port, user, command, password, stage, finish=r"Done!", login_check=True):
+def drive(port, user, command, password, stage, finish=r"Done!", login_check=True, term="xterm-256color"):
     """Runs a command on a terminal and answers what a person would be asked."""
     say(f"{stage}: {user}@{port}")
     # A real terminal type and a wide window: the first setup moves itself into tmux where
     # the image has it, and tmux draws for the terminal it is told about.
     child = pexpect.spawn("ssh", [*SSH, "-tt", "-p", str(port), f"{user}@127.0.0.1", command],
                           encoding="utf-8", codec_errors="replace", timeout=1800,
-                          env={**os.environ, "TERM": "xterm-256color"}, dimensions=(50, 220))
+                          env={**os.environ, "TERM": term}, dimensions=(50, 220))
     child.logfile_read = sys.stdout
     patterns = [
         r"(Start|Undo the setup)\? \[y/n",        # 0
@@ -289,8 +295,32 @@ def answers_and_refresh(password, pub):
         if must not in r.stdout:
             fail(f"the answers read back from the server do not include: {must}")
 
+    # What was switched by hand after the setup has to survive a refresh: ping turned back
+    # on with --ping, and the login hook removed the way its own first line says. Going by
+    # the answers of the setup, a refresh used to undo both.
+    ssh(NEW, "alex", sudo(password, "harden --ping on"))
+    ssh(NEW, "alex", sudo(password, "rm /etc/profile.d/99-server-status.sh"))
+    r = ssh(NEW, "alex", sudo(password, "harden --refresh"), check=False, timeout=900)
+    if r.returncode != 0 or "Settings refreshed" not in r.stdout:
+        print(r.stdout)
+        fail("the second --refresh did not finish")
+    r = ssh(NEW, "alex", sudo(password, "harden --answers") + "; echo ping=$(sysctl -n net.ipv4.icmp_echo_ignore_all); "
+                         "ls /usr/local/bin/server-status /etc/profile.d/99-server-status.sh 2>&1", check=False)
+    print(r.stdout)
+    if "DISABLE_PING='no'" not in r.stdout or "ping=0" not in r.stdout:
+        fail("--refresh stopped answering ping again after `harden --ping on`")
+    if "No such file or directory" not in r.stdout:     # of the two, only the hook may be missing
+        fail("--refresh brought back the login hook that had been removed")
+    if "/usr/local/bin/server-status\n" not in r.stdout:
+        fail("--refresh did not keep the server-status command")
+    ssh(NEW, "alex", sudo(password, "harden --ping off"))
+    r = ssh(NEW, "alex", sudo(password, "harden --answers"))
+    if "DISABLE_PING='yes'" not in r.stdout:
+        print(r.stdout)
+        fail("--ping off is not recorded with the saved answers")
 
-def verify_undone():
+
+def verify_undone(units_before):
     say("checking that the setup is undone")
     if not banner(OLD).startswith(b"SSH-"):
         fail("after --undo nothing answers on the old port")
@@ -315,6 +345,10 @@ def verify_undone():
         fail("after --undo: sshd is not running, or the firewall is still on")
     if r.stdout.count("No such file or directory") != 5:
         fail("after --undo some of the files the setup added are still there")
+    units_after = ssh(OLD, "root", UNITS_PROBE, check=False).stdout
+    print(units_after)
+    if units_after != units_before:
+        fail("after --undo a service the setup switched off is not back the way it was")
 
 
 def main():
@@ -325,9 +359,14 @@ def main():
     # The first setup runs the way a person starts it: no HARDEN_NO_TMUX, so where the image
     # has tmux the script moves itself into it. The later runs stay outside, to keep both
     # ways covered.
+    units_before = ssh(OLD, "root", UNITS_PROBE, check=False).stdout
+    print(units_before)
     has_tmux = ssh(OLD, "root", "command -v tmux", check=False).returncode == 0
     print(f"tmux in the image: {has_tmux}")
-    in_tmux = drive(OLD, "root", f"{answers(pub, tmux=True)} bash /root/harden.sh", password, "first setup")
+    # ...and from a terminal type the image has no description of, as kitty or ghostty are
+    # on a fresh server: tmux refuses to start on one, and the setup used to end right there.
+    in_tmux = drive(OLD, "root", f"{answers(pub, tmux=True)} bash /root/harden.sh", password, "first setup",
+                    term="xterm-nosuchterm")
     if has_tmux and not in_tmux:
         fail("the image has tmux, but the setup did not move itself into it")
     verify(password, "after the setup")
@@ -352,7 +391,7 @@ def main():
                        "sudo -n systemctl is-active fail2ban; sudo -n passwd -S root; sudo -n ls -la /root/.ssh; "
                        "sudo -n iptables -S 2>&1 | grep -ciE 'f2b|reject|drop'; sudo -n nft list ruleset 2>&1 | grep -ci f2b",
           password, "undo", finish=r"The setup is undone", login_check=False)
-    verify_undone()
+    verify_undone(units_before)
 
     say(f"OK: {NAME}")
 

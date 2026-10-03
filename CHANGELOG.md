@@ -7,6 +7,31 @@ where that version does not work — it is there because someone ran it and it d
 
 The text of each release on GitHub is generated from this file.
 
+## 2026.10.25
+
+Found by reading the script once more.
+
+- `--refresh` no longer takes back what was switched by hand after the setup. It turned
+  ping back on after `harden --ping off`, brought back the login hook that had been
+  removed, and moved the daily report back to 09:00. `--ping`, `--setup-telegram` and
+  `--install-status` are now recorded with the saved answers.
+- The setup run again with another port: until the new port was confirmed, the old port
+  fell back to the provider's `sshd_config` — passwords included — instead of keeping the
+  rules of the earlier run. Run again with the same port, the accounts that could log in
+  stay allowed until the login is confirmed.
+- From a terminal type the server does not know (kitty, ghostty on a fresh image) tmux
+  refused to start, and the setup ended there with tmux's one line for an explanation.
+- The marker files in users' home directories are written as that user. Written by root,
+  one landed wherever a symlink in that home pointed, owned by that user.
+- `--undo` also brings back `/etc/motd` (Debian), and switches on again the services the
+  setup had switched off (apport, ModemManager, udisks2).
+- A second run from another address left the firewall exception for the earlier address
+  in place; a network given as the admin address (`203.0.113.0/24`) was not whitelisted in
+  CrowdSec; a firewall that refuses the admin's address no longer ends the setup.
+- Smaller: key source 3 also reads the keys of the account `sudo` was called from (AWS,
+  Oracle, Azure); the reboot line names a new kernel only when there is one; the login
+  summary no longer fails on a root file system `df` cannot size.
+
 ## 2026.10.24
 
 Found by reading the script again, the parts added since the last such read included.
