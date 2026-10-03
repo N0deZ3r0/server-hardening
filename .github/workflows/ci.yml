@@ -51,6 +51,17 @@ jobs:
             shellcheck -S warning -s bash "embedded-$m"
           done
           cp embedded-STATUS server-status
+
+      - name: ShellCheck — everything it has to say (for reading; does not fail the build)
+        # The build fails on warnings and above. What is below that level is printed here,
+        # optional checks included, so that a review can go through it: now and then one of
+        # those notes is a real mistake. Left out: the notes that are about style alone.
+        run: |
+          quiet=SC2250,SC2248,SC2292,SC2249,SC2312,SC2016,SC2015
+          shellcheck -S style -o all -e "$quiet" -f gcc harden.sh tools/*.sh || true
+          for m in STATUS NOTIFY WATCH REPORT; do
+            shellcheck -S style -o all -e "$quiet" -f gcc -s bash "embedded-$m" || true
+          done
           awk '/<<.HOOK_EOF.$/{f=1;next} /^HOOK_EOF$/{f=0} f' harden.sh > hook.sh
           test -s hook.sh
           sh -n hook.sh
@@ -820,6 +831,20 @@ jobs:
           findtime = 1d
           maxretry = 3
           OLD
+          # A server set up by such a version has its whitelist only there, and no saved
+          # answers: --refresh reads them back from what the setup left
+          printf 'Port 10022\nAllowUsers alex\n' | sudo tee /tmp/ci-dropin.conf >/dev/null
+          got=$(sudo bash -c 'source ./harden.sh; SSHD_DROPIN=/tmp/ci-dropin.conf; F2B_JAIL=/nonexistent; STATE_FILE=/nonexistent
+                              load_answers; echo "$NEW_USER $SSH_PORT $ADMIN_IP"')
+          test "$got" = "alex 10022 198.51.100.7"
+          # ...and saved answers that lack lines (edited by hand, another version) go over
+          # that, instead of leaving variables unset for a later step to stop on
+          printf 'NEW_USER=bob\nAUTO_REBOOT=yes\n' | sudo tee /tmp/ci-state.conf >/dev/null
+          got=$(sudo bash -c 'source ./harden.sh; SSHD_DROPIN=/tmp/ci-dropin.conf; F2B_JAIL=/nonexistent; STATE_FILE=/tmp/ci-state.conf
+                              load_answers; echo "$NEW_USER $SSH_PORT $ADMIN_IP $AUTO_REBOOT [$DISABLE_PING] [$INSTALL_CROWDSEC]"')
+          echo "$got"
+          echo "$got" | grep -qE '^bob 10022 198\.51\.100\.7 yes \[(yes|no)\] \[(yes|no)\]$'
+          sudo rm -f /tmp/ci-dropin.conf /tmp/ci-state.conf
           sudo bash -c 'source ./harden.sh; SSH_PORT=2222; ADMIN_IP=; BACKUP_DIR=/root/ci-f2b2; setup_fail2ban'
           sudo test ! -e /etc/fail2ban/jail.local
           sudo grep -q 'port     = 10022' /root/ci-f2b2/jail.local
@@ -845,6 +870,16 @@ jobs:
           test "$admin" -lt "$limit"
           # ...and the exception for the earlier address does not stay behind
           if grep -F '203.0.113.5' fw2.txt; then echo "::error::the rule for the earlier admin address was left in place"; exit 1; fi
+          # UFW's refusal of the admin's address costs the exception, not the setup
+          sudo bash -c 'source ./harden.sh; CURRENT_SSH_PORTS=22; SSH_PORT=2222; ADMIN_IP=not.an.address; EXTRA_PORTS=; setup_firewall' | tee fw3.out
+          grep -q 'UFW refused the rule' fw3.out
+          sudo ufw status | grep -E '2222/tcp +LIMIT'
+          # A default the admin has changed — routed traffic allowed, as on a VPN server —
+          # is not put back by a second run
+          sudo ufw default allow routed
+          sudo bash -c 'source ./harden.sh; CURRENT_SSH_PORTS=22; SSH_PORT=2222; ADMIN_IP=; EXTRA_PORTS=; setup_firewall' >/dev/null
+          sudo ufw status verbose | grep -F 'allow (routed)'
+          sudo ufw default deny routed
           sudo ufw --force disable
 
   containers:

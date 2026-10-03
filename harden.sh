@@ -39,7 +39,7 @@ set -Eeuo pipefail
 # explicitly where it is written.
 umask 022
 
-HARDEN_VERSION="2026.10.25"
+HARDEN_VERSION="2026.10.26-dev"
 LOG_FILE="/var/log/harden.log"
 REPORT_FILE="/root/harden-report.txt"
 BACKUP_DIR="/root/harden-backup-$(date +%Y%m%d-%H%M%S)"
@@ -1885,11 +1885,23 @@ tg_api() {
     | curl -sS --max-time 15 -K - "$@" 2>/dev/null || true
 }
 
+# The hour of the daily report as the timer has it now. It is asked nowhere — it comes from
+# TG_REPORT_TIME — so a run that is not given it again has to find it here, or the report
+# goes back to 09:00.
+saved_report_time() {
+  sed -n 's/^OnCalendar=\*-\*-\* //p' /etc/systemd/system/harden-daily-report.timer 2>/dev/null || true
+}
+
 ask_telegram() {  # sets TG_TOKEN / TG_CHAT_ID, or TELEGRAM=no if the admin gives up
-  local token=${TG_TOKEN:-} chat=${TG_CHAT_ID:-} bot="" conf=/etc/harden/telegram.conf
+  local token=${TG_TOKEN:-} chat=${TG_CHAT_ID:-} bot="" conf=/etc/harden/telegram.conf api
   # Re-running the setup (after an update, say) should not ask for the token again
   if [[ -z $token && -s $conf ]] && ask_yn "$(T "Использовать уже сохранённого бота?" "Use the bot that is already saved?")" y; then
     TG_TOKEN=$(sed -n 's/^TG_TOKEN=//p' "$conf"); TG_CHAT_ID=$(sed -n 's/^TG_CHAT_ID=//p' "$conf")
+    # ...and with the bot, what else was saved for it: the hour of its report, and the
+    # address of the API where one was given
+    [[ -n ${TG_REPORT_TIME:-} ]] || TG_REPORT_TIME=$(saved_report_time)
+    api=$(sed -n 's/^TG_API=//p' "$conf")
+    [[ -n ${HARDEN_TG_API:-} || -z $api ]] || HARDEN_TG_API=$api
     TELEGRAM=yes
     return 0
   fi
@@ -2371,7 +2383,7 @@ derive_answers() {
   INSTALL_CROWDSEC=no; systemctl cat crowdsec.service &>/dev/null && INSTALL_CROWDSEC=yes
   RUN_LYNIS=yes
   TELEGRAM=no; [[ -s /etc/harden/telegram.conf ]] && TELEGRAM=yes
-  TG_REPORT_TIME=$(sed -n 's/^OnCalendar=\*-\*-\* //p' /etc/systemd/system/harden-daily-report.timer 2>/dev/null || true)
+  TG_REPORT_TIME=$(saved_report_time)
   EXTRA_PORTS=""
   h=$(home_of "${NEW_USER:-root}")
   SSH_PUBKEY=$(cat "$h/.ssh/authorized_keys" 2>/dev/null || true)
@@ -2381,11 +2393,13 @@ derive_answers() {
 load_answers() {
   [[ -f $SSHD_DROPIN ]] || die "$(T "Этот сервер не настраивался через harden.sh — сначала полная настройка: sudo bash harden.sh" \
                                     "This server was not set up by harden.sh — run the full setup first: sudo bash harden.sh")"
+  # What the server itself shows comes first, and the saved answers go over it. A file that
+  # lacks a line — edited by hand, or written by another version — then leaves no variable
+  # unset for a later step to stop on, half-way through a refresh.
+  derive_answers
   if [[ -r $STATE_FILE ]]; then
     # shellcheck disable=SC1090  # written by save_answers, root-only
     . "$STATE_FILE"
-  else
-    derive_answers
   fi
   [[ -n ${NEW_USER:-} && -n ${SSH_PORT:-} ]] \
     || die "$(T "Не удалось прочитать текущую настройку (пользователь, порт SSH)" "Could not read the current setup (user, SSH port)")"
@@ -2424,7 +2438,7 @@ run_refresh() {
     TG_CHAT_ID=$(sed -n 's/^TG_CHAT_ID=//p' /etc/harden/telegram.conf)
     api=$(sed -n 's/^TG_API=//p' /etc/harden/telegram.conf)
     [[ -z $api ]] || HARDEN_TG_API=$api
-    v=$(sed -n 's/^OnCalendar=\*-\*-\* //p' /etc/systemd/system/harden-daily-report.timer 2>/dev/null || true)
+    v=$(saved_report_time)
     [[ -z $v ]] || TG_REPORT_TIME=$v
     install_notifications
   fi
