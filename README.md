@@ -345,8 +345,12 @@ checksum in this README all agree, and only from a commit on `main` that passed 
 
 **What it does not prove:** that the release itself is honest. The checksum sits in the same
 repository as the script, so someone who took over the GitHub account could change both.
-Two things narrow that:
+Three things narrow that:
 
+- **Releases are immutable.** From 2026.10.22 on, a published release cannot be changed:
+  GitHub refuses to move its tag or replace its files, for the owner of the account too.
+  What a version number pointed to yesterday is what it points to today. Earlier releases
+  were published before this was switched on.
 - **Provenance.** With the GitHub CLI, `gh attestation verify harden.sh --repo
   N0deZ3r0/server-hardening` shows which commit and which workflow produced the file, signed
   through Sigstore — a file built anywhere else does not verify.
