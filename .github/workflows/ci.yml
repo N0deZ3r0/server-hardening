@@ -123,7 +123,7 @@ jobs:
           # A packaged config that an update kept back is reported.
           sudo touch /etc/ci-harden.conf.dpkg-dist
           out=$(sudo HARDEN_LANG=en bash harden.sh --check 2>&1) || true
-          printf '%s\n' "$out" | grep -F 'New package configs not reviewed'
+          printf '%s\n' "$out" | grep -F 'New package configs not reviewed' | grep -F '/etc/ci-harden.conf.dpkg-dist'
           sudo rm /etc/ci-harden.conf.dpkg-dist
           # UFW is not the only firewall: a server that drops incoming traffic by other
           # means is not "unprotected". And a NOPASSWD rule for a group counts as much as

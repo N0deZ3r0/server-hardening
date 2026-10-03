@@ -5,7 +5,7 @@
 **Одна команда превращает свежий VPS на Debian или Ubuntu в сервер, который пускает только по вашему ключу, — и не закроет старую дверь, пока вы не прошли через новую.**
 
 [![CI](https://github.com/N0deZ3r0/server-hardening/actions/workflows/ci.yml/badge.svg)](https://github.com/N0deZ3r0/server-hardening/actions/workflows/ci.yml)
-![version](https://img.shields.io/badge/version-2026.10.18-3b5bdb)
+![version](https://img.shields.io/badge/version-2026.10.19-3b5bdb)
 ![Debian](https://img.shields.io/badge/Debian-12%20%2F%2013-a80030)
 ![Ubuntu](https://img.shields.io/badge/Ubuntu-22.04%20%2F%2024.04%20%2F%2026.04-e95420)
 ![bash](https://img.shields.io/badge/bash-%D0%BE%D0%B4%D0%B8%D0%BD%20%D1%84%D0%B0%D0%B9%D0%BB-2f9e44)
@@ -25,7 +25,7 @@ CrowdSec, усиливает ядро, включает автообновлен
 Интерфейс — на русском и английском.
 
 ```bash
-curl -fsSLo harden.sh https://github.com/N0deZ3r0/server-hardening/releases/download/v2026.10.18/harden.sh && echo "694e4e15a1637038c073de4b86c2d9cd1eb9e0df289216abd00f4ade85753cde  harden.sh" | sha256sum -c - && sudo bash harden.sh
+curl -fsSLo harden.sh https://github.com/N0deZ3r0/server-hardening/releases/download/v2026.10.19/harden.sh && echo "f14137b036b75524009156e161c6fcf845fd58de8f945f1b5f75ae718e1d7d9c  harden.sh" | sha256sum -c - && sudo bash harden.sh
 ```
 
 Команда скачивает конкретный релиз и сверяет его SHA-256 до запуска: если отличается хоть
@@ -201,7 +201,7 @@ sudo harden --check          # или: sudo bash harden.sh --check
 (`sshd -T`), аккаунты и правила sudo, firewall, fail2ban и CrowdSec, auditd, AppArmor,
 обновления, время и параметры ядра и выводит по строке на каждый пункт. На сервере,
 который настраивал этот скрипт, каждое записанное им значение ядра сверяется с
-действующим, так что параметр, который что-то вернуло обратно, будет виден. Считаются и
+действующим, так что параметр, который что-то вернуло обратно, будет виден. Перечисляются и
 конфиги пакетов, которые обновление отложило для просмотра. Другой firewall вместо UFW —
 firewalld либо nftables или iptables, отбрасывающие входящие, — распознаётся и отмечается
 `!`; его правила не читаются. Там, где посмотреть нельзя —
@@ -267,7 +267,7 @@ sudo HARDEN_LANG=ru NEW_USER=sysop SSH_PORT=42222 GITHUB_KEYS_USER=вашник 
 | ОС | Debian 12/13, Ubuntu 22.04/24.04/26.04. RHEL, Alma, Rocky и CentOS не поддерживаются |
 | Виртуализация | KVM, VMware, Hyper-V, Xen — полностью. LXC/OpenVZ — частично: auditd, AppArmor и часть sysctl пропускаются |
 | Архитектура | x86_64 и ARM64 |
-| Проверено вживую | Ubuntu 24.04.5, KVM (OpenStack с cloud-init), 2 vCPU / 2 ГБ: полный прогон с чистого образа на версии 2026.10.7 (Lynis 78 → 84, после перезагрузки 86); что было с более поздними версиями — в разделе «Ограничения» |
+| Проверено вживую | Ubuntu 24.04.5, KVM (OpenStack с cloud-init), 2 vCPU / 2 ГБ: полный прогон с чистого образа на версии 2026.10.7 (Lynis 78 → 84, после перезагрузки 86) и полный прогон версии 2026.10.18 на том же сервере после отката предыдущей попытки; подробности — в разделе «Ограничения» |
 | Проверяется в CI | при каждом изменении: части настройки на Ubuntu 24.04 и `--check` в контейнерах Debian 12/13 и Ubuntu 22.04/24.04/26.04 |
 
 **У облачных хостеров** (AWS, Oracle, Hetzner Cloud, GCP, Azure) есть свой firewall в
@@ -303,7 +303,7 @@ sudo harden --lang en                  # сменить запомненный �
 контрольная сумма, без запуска настройки:
 
 ```bash
-curl -fsSLo harden.sh https://github.com/N0deZ3r0/server-hardening/releases/download/v2026.10.18/harden.sh && echo "694e4e15a1637038c073de4b86c2d9cd1eb9e0df289216abd00f4ade85753cde  harden.sh" | sha256sum -c - && sudo install -m 755 harden.sh /usr/local/sbin/harden
+curl -fsSLo harden.sh https://github.com/N0deZ3r0/server-hardening/releases/download/v2026.10.19/harden.sh && echo "f14137b036b75524009156e161c6fcf845fd58de8f945f1b5f75ae718e1d7d9c  harden.sh" | sha256sum -c - && sudo install -m 755 harden.sh /usr/local/sbin/harden
 ```
 
 Это заменяет команды — `--check`, `--ping`, `--lang`, `--setup-telegram` — и не трогает
@@ -360,7 +360,9 @@ curl -fsSLo harden.sh https://github.com/N0deZ3r0/server-hardening/releases/down
   считает службу остановленной, PID 1 зависает. Теперь скрипт сначала останавливает sshd и
   только потом переключает службы, приводит учёт systemd в порядок, если такое состояние
   уже есть, и читает результат из таблицы сокетов. Последний полный прогон с чистого образа был
-  на версии 2026.10.7; **исправленная версия с чистого образа ещё не запускалась.**
+  на версии 2026.10.7. Затем версия 2026.10.18 прошла до конца на том же сервере — но уже после
+  отката, когда sshd запускался не через сокет. **С чистого образа, где он запускается через
+  сокет, исправление проверено только в CI.**
 - **Живые прогоны — на одном сервере** (Ubuntu 24.04, KVM): полная настройка с чистого
   образа, уведомления в Telegram, `--check`. Эти прогоны нашли девять вещей, которые пропустил
   CI, — ложный провал в проверке, служебные строки журнала о поиске ключа, принятые за

@@ -38,7 +38,7 @@ set -Eeuo pipefail
 # explicitly where it is written.
 umask 022
 
-HARDEN_VERSION="2026.10.18"
+HARDEN_VERSION="2026.10.19"
 LOG_FILE="/var/log/harden.log"
 REPORT_FILE="/root/harden-report.txt"
 BACKUP_DIR="/root/harden-backup-$(date +%Y%m%d-%H%M%S)"
@@ -2075,9 +2075,15 @@ run_check() {
     && chk pass "$(T "Автообновления безопасности" "Automatic security updates")" || chk fail "$(T "Автообновления выключены" "Automatic updates off")"
   # Updates keep a locally edited config and save the packaged one beside it. Each such
   # file is a config whose new defaults nobody has looked at yet.
-  n=$(find /etc -xdev \( -name '*.dpkg-dist' -o -name '*.dpkg-new' -o -name '*.ucf-dist' \) 2>/dev/null | wc -l || true)
+  # The files are named (the first three): a bare count sent the first person who saw it
+  # off to run find.
+  out=$(find /etc -xdev \( -name '*.dpkg-dist' -o -name '*.dpkg-new' -o -name '*.ucf-dist' \) 2>/dev/null | sort || true)
+  n=$(grep -c . <<<"$out" || true)
+  list=$(head -3 <<<"$out" | paste -sd' ' - || true)
+  (( n > 3 )) && list+=" …"
   (( n == 0 )) && chk pass "$(T "Нет непросмотренных новых конфигов от пакетов" "No new package configs waiting for review")" \
-    || chk warn "$(T "Новые конфиги от пакетов не просмотрены:" "New package configs not reviewed:") $n (find /etc -name '*.dpkg-dist' -o -name '*.dpkg-new')"
+    || chk warn "$(T "Новые конфиги от пакетов не просмотрены ($n): $list — сравни с действующим файлом (diff) и удали" \
+                    "New package configs not reviewed ($n): $list — compare with the file in use (diff), then delete")"
   n=$(apt-get -s -o Debug::NoLocking=1 upgrade 2>/dev/null | grep -c '^Inst' || true)
   (( n == 0 )) && chk pass "$(T "Все обновления установлены" "All updates installed")" || chk warn "$(T "Ожидают установки:" "Pending updates:") $n"
   [[ -f /var/run/reboot-required ]] && chk warn "$(T "Нужна перезагрузка" "Reboot required")" || chk pass "$(T "Перезагрузка не нужна" "No reboot needed")"
