@@ -122,7 +122,9 @@ jobs:
         # time it starts. First show that this is what it does, then that it is stopped.
         run: |
           set -x
-          dpkg -s apport >/dev/null 2>&1 || sudo apt-get install -y -q apport >/dev/null
+          # The runner image has apport removed (config files only): install it for real
+          systemctl cat apport.service >/dev/null 2>&1 || { sudo apt-get update -q >/dev/null; sudo apt-get install -y -q apport >/dev/null; }
+          systemctl cat apport.service >/dev/null
           sudo sed -i 's/^enabled=.*/enabled=1/' /etc/default/apport
           sudo systemctl enable apport >/dev/null 2>&1 || true
           sudo systemctl restart apport
