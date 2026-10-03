@@ -123,6 +123,20 @@ jobs:
           # The merged-login mark must survive the bare environment a systemd unit runs in
           sudo env -i /usr/local/sbin/harden-notify "probe ×2"
           grep -F 'probe ×2' tg.log
+          # DEBUG (temporary): trace the watcher itself on this runner
+          sudo systemctl stop harden-login-watch
+          sudo bash -x /usr/local/sbin/harden-login-watch > watch.trace 2>&1 &
+          sleep 3
+          logger -t sshd "Accepted key ED25519 SHA256:dbg found at /home/alex/.ssh/authorized_keys:1"
+          logger -t sshd "Accepted publickey for alex from 198.51.100.9 port 5555 ssh2: ED25519 SHA256:dbg"
+          logger -t sshd "Accepted publickey for alex from 198.51.100.9 port 5556 ssh2: ED25519 SHA256:dbg"
+          logger -t sshd "Accepted publickey for alex from 198.51.100.10 port 6000 ssh2: ED25519 SHA256:dbg"
+          sleep 6
+          sudo pkill -f 'bash -x /usr/local/sbin/harden-login-watch' || true
+          set +x
+          echo "=== bash: $BASH_VERSION"; echo "=== watch.trace"; grep -nvE "^\+ (IFS=|read -r -t 1 line)$" watch.trace | cut -c1-170 | head -90
+          set -x
+          sudo systemctl start harden-login-watch
           # Every SSH login is reported, read from the journal — and only logins. The first
           # line is what sshd adds per key lookup under LogLevel VERBOSE; on a live server it
           # was reported as a login "from at", so it is replayed here exactly.
