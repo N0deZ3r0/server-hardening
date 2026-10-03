@@ -1363,24 +1363,50 @@ sshd_listener_pids() {  # sshd_listener_pids port
   ss -Hltnp "sport = :$1" 2>/dev/null | grep -oE '"sshd",pid=[0-9]+' | grep -oE '[0-9]+$' | sort -u || true
 }
 
-# Stop every sshd daemon still bound to the given ports. Called only after the unit has
-# been stopped, when nothing of sshd's may listen there any more.
+# systemd can be left believing that a unit it reads as inactive still has a main process.
+# Seen on a live server, and in CI after `systemctl enable ssh.service` had added the alias
+# sshd.service to a running, socket-activated unit — in some runs and not in others, with
+# the same commands. Two things follow from that state:
+#   - `systemctl stop` does nothing for such a unit, so its listener keeps the port;
+#   - that listener must not be signalled as it is. systemd's handler for the exit of a
+#     main process has no case for a unit that is not running, and PID 1 freezes: every
+#     systemctl call then times out. CI ran into exactly that, before a server did.
+# A start makes systemd take a new main process and file the old one as a left-over — the
+# journal of the live run shows it doing so. The stop then ends the new one, and the old
+# one can be stopped like any other leftover.
+forget_stale_main_pid() {
+  local svc main
+  svc=$(ssh_service)
+  systemctl is-active --quiet "$svc" && return 0
+  main=$(systemctl show -p MainPID --value "$svc" 2>/dev/null || true)
+  [[ -n $main && $main != 0 ]] || return 0
+  info "$(T "systemd считает $svc остановленной, хотя её процесс $main работает — привожу учёт в порядок" \
+            "systemd reads $svc as stopped while its process $main is running — setting its books straight")"
+  systemctl reset-failed "$svc" &>/dev/null || true
+  systemctl start "$svc" &>/dev/null || true
+  systemctl stop "$svc" &>/dev/null || true
+}
+
+# Stop every sshd daemon still bound to the given ports. Called after the unit has been
+# stopped and forget_stale_main_pid has run, when nothing of sshd's may listen there.
 #
-# It used to spare the process systemd names as the unit's MainPID. That is the bug a live
-# run found. On a cloud image systemd had the unit down as inactive while its listener was
-# still running: the journal shows no stop of the unit, then "Found left-over process" at
-# the start. The listener was not stopped here, which this code did for one pid only — the
-# one reported as MainPID. So the one daemon that had to go was the one spared, it kept
-# port 22, and the new daemon could not bind it. Versions 2026.10.8 to 2026.10.17 rolled
-# back at this step on such an image.
+# The process systemd names as the unit's MainPID is never signalled here. Until 2026.10.17
+# that was meant as "the unit's own daemon is not a leftover", and on a live server it
+# spared the one daemon that had to go: the unit was inactive, its old listener still ran
+# and was still named as MainPID, it kept port 22, and the new daemon could not bind it —
+# versions 2026.10.8 to 2026.10.17 rolled back at this step on such an image. The check
+# stays for the opposite reason: signalling that process is what freezes PID 1 (above).
+# forget_stale_main_pid is what gets a stale one out of systemd's books first.
 #
 # Sessions are untouched: they are separate processes and hold no listening socket on
 # these ports (their X11 listeners on 127.0.0.1:60xx are not SSH ports and are not asked for).
 kill_sshd_listeners_on() {  # kill_sshd_listeners_on port...
-  local p pid exe bin
+  local p pid main exe bin
+  main=$(systemctl show -p MainPID --value "$(ssh_service)" 2>/dev/null || true)
   bin=$(readlink -f "$(command -v sshd)" 2>/dev/null || true)
   for p in "$@"; do
     for pid in $(sshd_listener_pids "$p"); do
+      [[ $pid == "${main:-0}" ]] && continue
       # A process that is merely called sshd is not ours to stop: it has to run the
       # system's sshd binary. " (deleted)" is how the kernel marks a daemon that outlived
       # a package upgrade — a likely leftover, so it still counts.
@@ -1440,12 +1466,11 @@ ensure_ssh_killmode() {
 #
 # Ubuntu 22.10+ starts sshd through ssh.socket, which ignores Port, so the first call also
 # turns socket activation off and the plain service on — after sshd has been stopped, not
-# before. On the live server the units had been switched with the daemon running, and
-# moments later systemd had the unit down as inactive with the daemon alive. Whether the
-# switch caused that was not established (the same order leaves the unit active on a CI
-# runner); there is simply no reason to change units under a running daemon. What makes
-# the restart safe either way is below: every sshd left on the ports is stopped, whatever
-# systemd believes, and success is read from the socket table.
+# before. Switching the units under a running daemon is what left systemd with a unit it
+# read as inactive and a listener it no longer stopped (forget_stale_main_pid has the
+# story). Stopped first, the unit has nothing left for systemd to lose track of. If that
+# state is there already, from before this script, it is put right before anything is
+# signalled; and success is read from the socket table, not from systemd.
 restart_sshd() {  # restart_sshd port... — the ports the new daemon must end up bound to
   local svc
   svc=$(ssh_service)
@@ -1458,6 +1483,7 @@ restart_sshd() {  # restart_sshd port... — the ports the new daemon must end u
     systemctl disable ssh.socket &>/dev/null || true
     systemctl enable ssh.service &>/dev/null || true
   fi
+  forget_stale_main_pid
   # shellcheck disable=SC2086  # CURRENT_SSH_PORTS is a space-separated list
   kill_sshd_listeners_on "$@" $CURRENT_SSH_PORTS
   for _ in 1 2 3 4 5 6 7 8 9 10; do   # give the kernel a moment to release the ports

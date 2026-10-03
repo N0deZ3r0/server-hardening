@@ -24,7 +24,7 @@ summary, can report to Telegram, and finishes with a Lynis audit. Later, `sudo h
 audits the server without changing anything. The interface is in English and Russian.
 
 ```bash
-curl -fsSLo harden.sh https://github.com/N0deZ3r0/server-hardening/releases/download/v2026.10.18/harden.sh && echo "08dd41a9a738a733cd90a4a0bc588f87ff10c4ac230b31e353b7bfca2cdca46a  harden.sh" | sha256sum -c - && sudo bash harden.sh
+curl -fsSLo harden.sh https://github.com/N0deZ3r0/server-hardening/releases/download/v2026.10.18/harden.sh && echo "694e4e15a1637038c073de4b86c2d9cd1eb9e0df289216abd00f4ade85753cde  harden.sh" | sha256sum -c - && sudo bash harden.sh
 ```
 
 The command downloads a fixed release and checks its SHA-256 before running it: if a single
@@ -301,7 +301,7 @@ On a server that is already set up, put the newer script in place of the old one
 download and checksum, without running the setup:
 
 ```bash
-curl -fsSLo harden.sh https://github.com/N0deZ3r0/server-hardening/releases/download/v2026.10.18/harden.sh && echo "08dd41a9a738a733cd90a4a0bc588f87ff10c4ac230b31e353b7bfca2cdca46a  harden.sh" | sha256sum -c - && sudo install -m 755 harden.sh /usr/local/sbin/harden
+curl -fsSLo harden.sh https://github.com/N0deZ3r0/server-hardening/releases/download/v2026.10.18/harden.sh && echo "694e4e15a1637038c073de4b86c2d9cd1eb9e0df289216abd00f4ade85753cde  harden.sh" | sha256sum -c - && sudo install -m 755 harden.sh /usr/local/sbin/harden
 ```
 
 That replaces the commands — `--check`, `--ping`, `--lang`, `--setup-telegram` — and leaves
@@ -348,9 +348,12 @@ Knowingly open, with the reason for each:
   image.** They stopped at the SSH switch and rolled back: access was never lost, and the
   setup was never completed. systemd had the SSH unit down as inactive while its listener
   was still running, and the script spared that listener as the unit's main process — so
-  the one daemon that had to go kept port 22. How systemd got into that state was not
-  established. Which daemon may stay is no longer taken from systemd, success is read
-  from the socket table, and CI runs the case of a main process that is the leftover. The last
+  the one daemon that had to go kept port 22. CI reproduces that state — `systemctl enable
+  ssh.service` on a running, socket-activated unit — in some runs and not in others. It
+  also showed the trap in the obvious fix: signalling that listener while systemd reads
+  the unit as inactive freezes PID 1. The script now stops sshd before it switches the
+  units, puts systemd's books straight if the state is already there, and reads success
+  from the socket table. The last
   complete run from a clean image was version 2026.10.7; **the fixed version has not
   been run from a clean image yet.**
 - **Live runs are on one server** (Ubuntu 24.04, KVM): the full setup from a clean image,

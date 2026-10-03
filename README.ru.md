@@ -25,7 +25,7 @@ CrowdSec, усиливает ядро, включает автообновлен
 Интерфейс — на русском и английском.
 
 ```bash
-curl -fsSLo harden.sh https://github.com/N0deZ3r0/server-hardening/releases/download/v2026.10.18/harden.sh && echo "08dd41a9a738a733cd90a4a0bc588f87ff10c4ac230b31e353b7bfca2cdca46a  harden.sh" | sha256sum -c - && sudo bash harden.sh
+curl -fsSLo harden.sh https://github.com/N0deZ3r0/server-hardening/releases/download/v2026.10.18/harden.sh && echo "694e4e15a1637038c073de4b86c2d9cd1eb9e0df289216abd00f4ade85753cde  harden.sh" | sha256sum -c - && sudo bash harden.sh
 ```
 
 Команда скачивает конкретный релиз и сверяет его SHA-256 до запуска: если отличается хоть
@@ -303,7 +303,7 @@ sudo harden --lang en                  # сменить запомненный �
 контрольная сумма, без запуска настройки:
 
 ```bash
-curl -fsSLo harden.sh https://github.com/N0deZ3r0/server-hardening/releases/download/v2026.10.18/harden.sh && echo "08dd41a9a738a733cd90a4a0bc588f87ff10c4ac230b31e353b7bfca2cdca46a  harden.sh" | sha256sum -c - && sudo install -m 755 harden.sh /usr/local/sbin/harden
+curl -fsSLo harden.sh https://github.com/N0deZ3r0/server-hardening/releases/download/v2026.10.18/harden.sh && echo "694e4e15a1637038c073de4b86c2d9cd1eb9e0df289216abd00f4ade85753cde  harden.sh" | sha256sum -c - && sudo install -m 755 harden.sh /usr/local/sbin/harden
 ```
 
 Это заменяет команды — `--check`, `--ping`, `--lang`, `--setup-telegram` — и не трогает
@@ -353,10 +353,13 @@ curl -fsSLo harden.sh https://github.com/N0deZ3r0/server-hardening/releases/down
   Ubuntu 24.04.** Они останавливались на переключении SSH и откатывались: доступ не
   терялся, но настройка не доводилась до конца. systemd считал службу SSH остановленной,
   хотя её процесс продолжал слушать порт, а скрипт не трогал этот процесс как главный у
-  службы — так что единственный демон, который должен был уйти, остался на порту 22. Как
-  systemd пришёл в такое состояние, установить не удалось. Теперь то, какой демон может
-  остаться, не берётся у systemd, результат читается из таблицы сокетов, и в CI есть случай,
-  когда главным назван сам лишний процесс. Последний полный прогон с чистого образа был
+  службы — так что единственный демон, который должен был уйти, остался на порту 22. CI
+  воспроизводит это состояние — `systemctl enable ssh.service` при работающей службе,
+  запущенной через сокет, — в одних прогонах и не воспроизводит в других. Он же показал
+  ловушку в очевидном исправлении: если послать сигнал этому процессу, пока systemd
+  считает службу остановленной, PID 1 зависает. Теперь скрипт сначала останавливает sshd и
+  только потом переключает службы, приводит учёт systemd в порядок, если такое состояние
+  уже есть, и читает результат из таблицы сокетов. Последний полный прогон с чистого образа был
   на версии 2026.10.7; **исправленная версия с чистого образа ещё не запускалась.**
 - **Живые прогоны — на одном сервере** (Ubuntu 24.04, KVM): полная настройка с чистого
   образа, уведомления в Telegram, `--check`. Эти прогоны нашли девять вещей, которые пропустил
