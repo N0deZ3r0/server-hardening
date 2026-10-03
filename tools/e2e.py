@@ -7,8 +7,9 @@ Run by CI (.github/workflows/ci.yml), once per supported release:
 
 The pieces of harden.sh are tested one by one elsewhere. This runs all of it, the way a
 person would on a fresh VPS: a cloud image boots under QEMU/KVM with cloud-init, root logs
-in with a key, the script asks its questions on a real terminal, a password is typed for
-the new user, the login on the new port is tried from outside before it is confirmed.
+in with a key, the script asks every one of its questions on a real terminal and gets
+them answered one by one — nothing is preset — a password is typed for the new user, the
+login on the new port is tried from outside before it is confirmed.
 Then the result is checked from outside and from inside, and the server is taken through
 what happens to it afterwards:
 
@@ -243,8 +244,32 @@ def answers(pub, tmux=False, **more):
     return " ".join(f"{k}={shlex.quote(v)}" for k, v in env.items())
 
 
+def interview(pub):
+    """The questions of a setup with nothing preset, and what a person answers: in the
+    order they are asked, each as (what the question looks like, the answer)."""
+    yn = r"[^\n]*\[y/n"
+    return [
+        (r"Language / Язык:[^\n]*\]: ", "1"),
+        (r"Name of the new sudo user \[sysop\]: ", "alex"),
+        (r"Choice \[1\]: ", "1"),
+        (r"Paste the public key \(ssh-ed25519 AAAA\.\.\.\): ", pub),
+        (r"New SSH port \[\d+\]: ", str(NEW)),
+        (r"Other ports to open in the firewall[^\n]*: ", "80,443"),
+        # the address is the one the script has to find by itself, from the SSH session
+        (r"Your IP is " + re.escape(GATEWAY) + r" — whitelist it" + yn, "y"),
+        (r"Allow a nightly automatic reboot" + yn, "n"),
+        (r"Lock the root password" + yn, "y"),
+        (r"Lock them AFTER" + yn, "y"),
+        (r"Install CrowdSec" + yn, "y" if CROWDSEC == "yes" else "n"),
+        (r"Run a Lynis audit at the end\?" + yn, "y"),
+        (r"Telegram alerts \(SSH logins" + yn, "n"),
+        (r"Stop answering ping\?" + yn, "y"),
+        (r"Reboot now\?" + yn, "n"),
+    ]
+
+
 def drive(port, user, command, password, stage, finish=r"Done!", login_check=True, term="xterm-256color",
-          at_question=None, close_tmux=True, typeahead=False):
+          at_question=None, close_tmux=True, typeahead=False, questions=()):
     """Runs a command on a terminal and answers what a person would be asked.
 
     Each question is answered once. tmux repaints the screen now and then, the question
@@ -270,7 +295,7 @@ def drive(port, user, command, password, stage, finish=r"Done!", login_check=Tru
         pexpect.EOF,                              # 7
         pexpect.TIMEOUT,                          # 8
         r"Press Enter to close tmux",             # 9
-    ]
+    ] + [q for q, _ in questions]                 # 10 and on: the interview
     done = False
     confirmed = not login_check
     in_tmux = False
@@ -278,10 +303,12 @@ def drive(port, user, command, password, stage, finish=r"Done!", login_check=Tru
     while True:
         i = child.expect(patterns)
         key = child.match.group(1) if i == 0 else i
-        if i in (0, 1, 2, 3, 6, 9) and key in answered:
+        if (i in (0, 1, 2, 3, 6, 9) or i >= 10) and key in answered:
             continue        # the same question, painted again
         answered.add(key)
-        if i == 0:
+        if i >= 10:
+            child.sendline(questions[i - 10][1])
+        elif i == 0:
             child.sendline("y")
             if typeahead and key == "Start":
                 # a key pressed once too often, minutes before the questions that matter
@@ -317,6 +344,11 @@ def drive(port, user, command, password, stage, finish=r"Done!", login_check=Tru
     child.close(force=True)
     if not (done and confirmed):
         fail(f"{stage} ended without finishing (done={done}, login confirmed={confirmed})")
+    # every question of the interview has to have been asked, bar the one about a reboot,
+    # which is asked only when one is due
+    missed = [q for n, (q, _) in enumerate(questions) if n + 10 not in answered and "Reboot now" not in q]
+    if missed:
+        fail(f"{stage}: these questions were never asked: {missed}")
     return in_tmux
 
 
@@ -599,8 +631,11 @@ def main():
     # And with a "y" typed ahead, right after "Start?": it must not become the answer to
     # the question about the login — the checks made at that question would find the old
     # port closed.
-    in_tmux = drive(OLD, "root", f"{answers(pub, tmux=True)} bash /root/harden.sh", password, "first setup",
-                    term="xterm-nosuchterm", at_question=first_setup_question, typeahead=True)
+    # Nothing is preset: every question is asked and answered, the key is pasted, the
+    # admin's address is the one the script finds for itself, and Lynis runs at the end.
+    in_tmux = drive(OLD, "root", "bash /root/harden.sh", password, "first setup",
+                    term="xterm-nosuchterm", at_question=first_setup_question, typeahead=True,
+                    questions=interview(pub))
     if has_tmux and not in_tmux:
         fail("the image has tmux, but the setup did not move itself into it")
     verify(password, "after the setup")
