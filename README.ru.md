@@ -5,7 +5,7 @@
 **Одна команда превращает свежий VPS на Debian или Ubuntu в сервер, который пускает только по вашему ключу, — и не закроет старую дверь, пока вы не прошли через новую.**
 
 [![CI](https://github.com/N0deZ3r0/server-hardening/actions/workflows/ci.yml/badge.svg)](https://github.com/N0deZ3r0/server-hardening/actions/workflows/ci.yml)
-![version](https://img.shields.io/badge/version-2026.10.23-3b5bdb)
+![version](https://img.shields.io/badge/version-2026.10.24-3b5bdb)
 ![Debian](https://img.shields.io/badge/Debian-12%20%2F%2013-a80030)
 ![Ubuntu](https://img.shields.io/badge/Ubuntu-22.04%20%2F%2024.04%20%2F%2026.04-e95420)
 ![bash](https://img.shields.io/badge/bash-%D0%BE%D0%B4%D0%B8%D0%BD%20%D1%84%D0%B0%D0%B9%D0%BB-2f9e44)
@@ -25,7 +25,7 @@ CrowdSec, усиливает ядро, включает автообновлен
 Интерфейс — на русском и английском.
 
 ```bash
-curl -fsSLo harden.sh https://github.com/N0deZ3r0/server-hardening/releases/download/v2026.10.23/harden.sh && echo "5bdd325728af1784dbd074a0770b7293347ebff6e8b934dc9ed23813454d56a1  harden.sh" | sha256sum -c - && sudo bash harden.sh
+curl -fsSLo harden.sh https://github.com/N0deZ3r0/server-hardening/releases/download/v2026.10.24/harden.sh && echo "de2d008acf9538e7cc17991479c2e9ae0b92e5dd8bb2ba6728288c39d4857be1  harden.sh" | sha256sum -c - && sudo bash harden.sh
 ```
 
 Команда скачивает конкретный релиз и сверяет его SHA-256 до запуска: если отличается хоть
@@ -57,6 +57,8 @@ auditd мешают развить взлом и помогают потом п�
   запускает SSH на обоих портах, показывает точную команду и ждёт, пока вы войдёте из
   *второго* окна. Старый порт закрывает только ответ «да». Ответ «нет» возвращает SSH
   ровно в исходное состояние.
+  До этого на старом порту действуют прежние правила входа — новые относятся только к новому
+  порту, — так что ключ, который не подошёл, ничего не стоит, даже если сессия оборвётся.
 - **Ваш IP попадает в белый список** fail2ban, CrowdSec и лимита firewall — по вашему
   согласию. Без этого пара быстрых тестовых входов банит самого администратора (так и
   случилось во время проверки).
@@ -333,7 +335,7 @@ sudo harden --undo                     # откатить настройку и�
 те же загрузка и контрольная сумма, а вместо настройки `--refresh`:
 
 ```bash
-curl -fsSLo harden.sh https://github.com/N0deZ3r0/server-hardening/releases/download/v2026.10.23/harden.sh && echo "5bdd325728af1784dbd074a0770b7293347ebff6e8b934dc9ed23813454d56a1  harden.sh" | sha256sum -c - && sudo bash harden.sh --refresh
+curl -fsSLo harden.sh https://github.com/N0deZ3r0/server-hardening/releases/download/v2026.10.24/harden.sh && echo "de2d008acf9538e7cc17991479c2e9ae0b92e5dd8bb2ba6728288c39d4857be1  harden.sh" | sha256sum -c - && sudo bash harden.sh --refresh
 ```
 
 `--refresh` ничего не спрашивает. Он записывает настройки ядра, правила аудита, настройки

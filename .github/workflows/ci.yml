@@ -469,6 +469,19 @@ jobs:
           sudo /usr/sbin/sshd -t -f /tmp/ci-sshd.conf
           sudo bash -c 'source ./harden.sh; SSHD_DROPIN=/tmp/ci-sshd.conf; NEW_USER=runner; write_sshd_config 2231'
           sudo grep -x 'AllowUsers runner' /tmp/ci-sshd.conf
+          # the first stage of the switch: the rules that decide who gets in hold for the
+          # new port only — asked of sshd itself, for a connection to each port
+          sudo bash -c 'source ./harden.sh; SSHD_DROPIN=/tmp/ci-sshd.conf; NEW_USER=runner; write_sshd_config "22 2231" 2231'
+          sudo /usr/sbin/sshd -t -f /tmp/ci-sshd.conf
+          on_new=$(sudo /usr/sbin/sshd -T -f /tmp/ci-sshd.conf -C user=runner,host=localhost,addr=127.0.0.1,lport=2231)
+          on_old=$(sudo /usr/sbin/sshd -T -f /tmp/ci-sshd.conf -C user=runner,host=localhost,addr=127.0.0.1,lport=22)
+          printf '%s\n' "$on_new" | grep -x 'permitrootlogin no'
+          printf '%s\n' "$on_new" | grep -x 'passwordauthentication no'
+          printf '%s\n' "$on_new" | grep -x 'allowusers runner'
+          printf '%s\n' "$on_new" | grep -x 'authenticationmethods publickey'
+          if printf '%s\n' "$on_old" | grep -x 'permitrootlogin no\|allowusers runner\|authenticationmethods publickey'; then
+            echo "::error::the old port got the new rules before the login was confirmed"; exit 1
+          fi
           sudo rm -f /tmp/ci-sshd.conf
           sudo rm -f /etc/ssh/sshd_config.d/00-ci.conf
           sudo systemctl stop ssh

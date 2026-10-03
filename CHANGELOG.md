@@ -7,6 +7,23 @@ where that version does not work — it is there because someone ran it and it d
 
 The text of each release on GitHub is generated from this file.
 
+## 2026.10.24
+
+Found by reading the script again, the parts added since the last such read included.
+
+- The SSH switch: until the login on the new port is confirmed, the old port keeps the
+  rules it had. Before, both ports got the new rules at once — if the new key turned out not
+  to work and the session dropped, the provider's console was the only way back.
+- `--undo` takes only a backup made before the setup; one taken on an already hardened
+  server would have put the hardening back.
+- `--refresh` on a server set up by a version older than 2026.10.15 lost the whitelisted
+  address.
+- A second run of the setup no longer resets the firewall's defaults for outgoing and
+  routed traffic — a VPN server that allows routing kept losing it.
+- A finished run left open in tmux is no longer what the next run attaches to.
+- Smaller: a port typed with a leading zero is accepted; the CrowdSec whitelist follows the
+  answer of the latest run.
+
 ## 2026.10.23
 
 - Telegram: the daily report now carries the result of `--check` — the summary line and

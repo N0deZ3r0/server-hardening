@@ -185,8 +185,17 @@ def drive(port, user, command, password, stage, finish=r"Done!", login_check=Tru
             if r.stdout.strip() != "alex":
                 print(r.stdout, r.stderr)
                 fail("the login on the new port does not work at the moment the script asks about it")
-            if stage == "first setup" and not banner(OLD).startswith(b"SSH-"):
-                fail("the old port was closed before the new one was confirmed")
+            if stage == "first setup":
+                if not banner(OLD).startswith(b"SSH-"):
+                    fail("the old port was closed before the new one was confirmed")
+                # Until the answer is given the old port lets the admin in the old way, and
+                # the new port already refuses what it will refuse afterwards.
+                if ssh(OLD, "root", "true", check=False).returncode != 0:
+                    fail("the old way in (root, on the old port) stopped working before the new one was confirmed")
+                if ssh(NEW, "root", "true", check=False).returncode == 0:
+                    fail("root can log in on the new port while the question is being asked")
+                if ssh(NEW, "provider", "true", check=False).returncode == 0:
+                    fail("an account other than the new user can log in on the new port")
             confirmed = True
             child.sendline("y")
         elif i == 4:

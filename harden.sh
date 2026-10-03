@@ -39,7 +39,7 @@ set -Eeuo pipefail
 # explicitly where it is written.
 umask 022
 
-HARDEN_VERSION="2026.10.23"
+HARDEN_VERSION="2026.10.24"
 LOG_FILE="/var/log/harden.log"
 REPORT_FILE="/root/harden-report.txt"
 BACKUP_DIR="/root/harden-backup-$(date +%Y%m%d-%H%M%S)"
@@ -187,8 +187,14 @@ relaunch_in_tmux() {
   [[ -n ${TMUX:-} || -n ${STY:-} || -n ${HARDEN_NO_TMUX:-} ]] && return 0
   command -v tmux >/dev/null || return 0
   [[ -f $0 && -t 0 ]] || return 0
-  local script inner v
+  local script inner v done_flag=/run/harden-tmux.done
   script=$(readlink -f "$0")
+  # A session whose run is still going has to be attached to (that is what -A is for: the
+  # connection dropped, the admin starts the command again). A session whose run has ended
+  # and is only waiting for Enter would show the old output instead of starting anew, so
+  # the run leaves a mark when it ends.
+  if [[ -e $done_flag ]]; then tmux kill-session -t harden 2>/dev/null || true; fi
+  rm -f "$done_flag"
   inner="env HARDEN_NO_TMUX=1"
   for v in HARDEN_LANG NEW_USER SSH_PORT SSH_PUBKEY GITHUB_KEYS_USER EXTRA_PORTS AUTO_REBOOT REBOOT_TIME \
            LOCK_ROOT LOCK_OTHER_USERS INSTALL_CROWDSEC RUN_LYNIS REBOOT_NOW SET_USER_PASSWORD ADMIN_IP \
@@ -198,7 +204,7 @@ relaunch_in_tmux() {
     # in ps; inside tmux the script asks for it again (hidden input)
     [[ -n ${!v+x} ]] && inner+=" $v=$(printf '%q' "${!v}")"
   done
-  inner+=" bash $(printf '%q' "$script"); echo; read -rp $(printf '%q' "$(T 'Enter — закрыть окно tmux' 'Press Enter to close tmux')") _"
+  inner+=" bash $(printf '%q' "$script"); touch $done_flag; echo; read -rp $(printf '%q' "$(T 'Enter — закрыть окно tmux' 'Press Enter to close tmux')") _"
   info "$(T "Запускаю внутри tmux. Если SSH оборвётся — зайди снова и выполни: tmux attach -t harden" \
             "Running inside tmux. If SSH drops, log in again and run: tmux attach -t harden")"
   sleep 2
@@ -386,7 +392,8 @@ collect_answers() {
   local suggested
   suggested=$(shuf -i 20000-60999 -n 1)
   SSH_PORT=${SSH_PORT:-}
-  until [[ $SSH_PORT =~ ^[0-9]+$ ]] && (( SSH_PORT >= 1024 && SSH_PORT <= 65535 )) \
+  # 10#: "08080" is a number to a person and a broken octal to bash
+  until [[ $SSH_PORT =~ ^[0-9]{1,5}$ ]] && SSH_PORT=$((10#$SSH_PORT)) && (( SSH_PORT >= 1024 && SSH_PORT <= 65535 )) \
         && { [[ " $CURRENT_SSH_PORTS " == *" $SSH_PORT "* ]] || ! port_busy "$SSH_PORT"; }; do
     [[ -n $SSH_PORT ]] && warn "$(T "Порт должен быть 1024–65535 и свободен." "The port must be 1024–65535 and free.")"
     ask "$(T "Новый порт SSH" "New SSH port")" "$suggested"; SSH_PORT=$REPLY
@@ -970,10 +977,11 @@ EOF
 # ---------- 5. firewall ----------
 setup_firewall() {
   step "Firewall (UFW)"
-  # No reset — rules added by hand survive a re-run
+  # No reset — rules added by hand survive a re-run. Only the incoming default is set: the
+  # outgoing and routed ones are what they are on a fresh system (allow, deny), and on a
+  # server where the admin has changed them — routed traffic allowed for a VPN, say — a
+  # second run of the setup used to put them back without a word.
   ufw default deny incoming
-  ufw default allow outgoing
-  ufw default deny routed
   # UFW re-applies its own sysctl file on every start, after sysctl.d — keep the keys it
   # also sets in line with ours, or it quietly turns them back (it ships log_martians=0)
   ufw_sysctl_set net/ipv4/conf/all/log_martians 1
@@ -1278,6 +1286,8 @@ setup_crowdsec() {
     warn "$(T "CrowdSec не установился — пропущен, fail2ban защищает SSH и без него" "CrowdSec did not install — skipped; fail2ban protects SSH without it")"
     return 0
   fi
+  # the whitelist follows the answer: an address given at an earlier run is not kept for good
+  rm -f /etc/crowdsec/parsers/s02-enrich/99-harden-admin-whitelist.yaml
   if [[ -n $ADMIN_IP ]]; then
     mkdir -p /etc/crowdsec/parsers/s02-enrich
     cat >/etc/crowdsec/parsers/s02-enrich/99-harden-admin-whitelist.yaml <<EOF
@@ -1316,8 +1326,20 @@ filter_algos() {  # filter_algos <ssh -Q type> algorithms... -> the supported on
 
 ssh_service() { systemctl list-unit-files ssh.service &>/dev/null && echo ssh || echo sshd; }
 
-write_sshd_config() {  # write_sshd_config "port1 port2 ..."
-  local ports=$1 p kex ciphers macs hostkeys
+# write_sshd_config "port1 port2 ..." [new-port]
+# With a second argument the rules that decide who gets in — no root, keys only, the named
+# users — are written for that port alone (a Match block), and every other port keeps the
+# rules it had. That is the first stage of the switch: until the admin has logged in on the
+# new port, the old one is not just open, it still lets them in the old way. Before, both
+# ports got the new rules at once, and if the new key turned out not to work and the
+# session dropped, the only way back was the provider's console.
+write_sshd_config() {
+  local ports=$1 only_on=${2:-} p kex ciphers macs hostkeys access
+  access="PermitRootLogin no
+AllowUsers $NEW_USER${SSH_EXTRA_USERS:+ $SSH_EXTRA_USERS}
+AuthenticationMethods publickey
+PasswordAuthentication no
+KbdInteractiveAuthentication no"
   kex=$(filter_algos kex mlkem768x25519-sha256 sntrup761x25519-sha512 sntrup761x25519-sha512@openssh.com \
         curve25519-sha256 curve25519-sha256@libssh.org diffie-hellman-group18-sha512 diffie-hellman-group16-sha512)
   ciphers=$(filter_algos cipher chacha20-poly1305@openssh.com aes256-gcm@openssh.com aes128-gcm@openssh.com aes256-ctr aes128-ctr)
@@ -1334,12 +1356,10 @@ HostKey /etc/ssh/ssh_host_ed25519_key
 HostKey /etc/ssh/ssh_host_rsa_key
 
 # --- Authentication: keys only, no root ---
-PermitRootLogin no
-AllowUsers $NEW_USER${SSH_EXTRA_USERS:+ $SSH_EXTRA_USERS}
+EOF
+    if [[ -z $only_on ]]; then echo "$access"; fi
+    cat <<EOF
 PubkeyAuthentication yes
-AuthenticationMethods publickey
-PasswordAuthentication no
-KbdInteractiveAuthentication no
 PermitEmptyPasswords no
 HostbasedAuthentication no
 IgnoreRhosts yes
@@ -1378,6 +1398,13 @@ EOF
     [[ -n $ciphers ]]  && echo "Ciphers $ciphers"
     [[ -n $macs ]]     && echo "MACs $macs"
     [[ -n $hostkeys ]] && echo "HostKeyAlgorithms $hostkeys"
+    if [[ -n $only_on ]]; then
+      echo
+      echo "# --- Until the login on port $only_on is confirmed, who gets in is decided for that"
+      echo "#     port only. A Match block has to come last: it runs to the end of the file. ---"
+      echo "Match LocalPort $only_on"
+      sed 's/^/    /' <<<"$access"
+    fi
     true
   } >"$SSHD_DROPIN"
   chmod 600 "$SSHD_DROPIN"
@@ -1552,6 +1579,18 @@ stash_sshd_config_dist() {
   return 0
 }
 
+# What sshd will really do for a login on the new port, not what our file says: a line
+# earlier in sshd_config, or a drop-in that sorts before ours, wins ("first match wins").
+# -C makes sshd -T apply Match blocks as it would for such a connection.
+ssh_settings_not_in_effect() {
+  local eff kv bad=""
+  eff=$(sshd -T -C "user=$NEW_USER,host=localhost,addr=127.0.0.1,lport=$SSH_PORT" 2>/dev/null || true)
+  for kv in 'passwordauthentication no' 'permitrootlogin no' 'kbdinteractiveauthentication no' 'authenticationmethods publickey'; do
+    grep -qx "$kv" <<<"$eff" || bad+="[$kv] "
+  done
+  printf '%s' "$bad"
+}
+
 rollback_ssh() {
   warn "$(T "Откат настроек SSH..." "Rolling SSH back...")"
   rm -f "$SSHD_DROPIN"
@@ -1581,15 +1620,16 @@ setup_ssh() {
   # Weak DH groups
   if [[ -f /etc/ssh/moduli ]]; then
     awk '$5 >= 3071' /etc/ssh/moduli >/etc/ssh/moduli.safe && [[ -s /etc/ssh/moduli.safe ]] && mv /etc/ssh/moduli.safe /etc/ssh/moduli
+    rm -f /etc/ssh/moduli.safe   # left behind, empty, when no group was large enough
   fi
 
   # Ubuntu 22.10+ runs sshd through ssh.socket, which ignores Port. The switch to the
   # plain service is made inside restart_sshd, after sshd has been stopped — see there.
 
-  # Stage 1: old and new port side by side
+  # Stage 1: old and new port side by side — the new rules on the new port only
   local ports="$CURRENT_SSH_PORTS"
   [[ " $ports " == *" $SSH_PORT "* ]] || ports="$ports $SSH_PORT"
-  write_sshd_config "$ports"
+  write_sshd_config "$ports" "$SSH_PORT"
   if ! sshd -t; then rollback_ssh; die "$(T "Конфиг sshd не прошёл проверку — откатил." "sshd config failed the check — rolled back.")"; fi
   # shellcheck disable=SC2086
   restart_sshd $ports || { rollback_ssh; die "$(T "sshd не перезапустился — откатил." "sshd did not restart — rolled back.")"; }
@@ -1598,17 +1638,12 @@ setup_ssh() {
   else
     # Said in so many words. Read back from the log, a bare "ports: 22 21576" looked as
     # if the old port had been left open for good.
-    ok "$(T "sshd ВРЕМЕННО слушает и старый, и новый порт: $ports — старый закроется, как только ты подтвердишь вход на новый" \
-            "sshd TEMPORARILY listens on the old and the new port: $ports — the old one closes as soon as you confirm the login on the new one")"
+    ok "$(T "sshd ВРЕМЕННО слушает и старый, и новый порт: $ports. На старом пока действуют прежние правила входа; он закроется, как только ты подтвердишь вход на новый" \
+            "sshd TEMPORARILY listens on the old and the new port: $ports. The old one still lets you in the old way; it closes as soon as you confirm the login on the new one")"
   fi
 
-  # What sshd will really do, not what our file says: a line earlier in sshd_config, or a
-  # drop-in that sorts before ours, wins ("first match wins")
-  local eff bad="" kv
-  eff=$(sshd -T 2>/dev/null || true)
-  for kv in 'passwordauthentication no' 'permitrootlogin no' 'kbdinteractiveauthentication no' 'authenticationmethods publickey'; do
-    grep -qx "$kv" <<<"$eff" || bad+="[$kv] "
-  done
+  local bad
+  bad=$(ssh_settings_not_in_effect)
   [[ -z $bad ]] || warn "$(T "Эти настройки SSH не действуют — их перекрывает что-то выше в /etc/ssh/sshd_config или в sshd_config.d:" \
                             "These SSH settings are not in effect — something earlier in /etc/ssh/sshd_config or in sshd_config.d overrides them:") $bad"
 
@@ -1655,6 +1690,9 @@ setup_ssh() {
   ufw delete limit OpenSSH >/dev/null 2>&1 || true
   ok "$(T "SSH только на порту $SSH_PORT, только по ключу, root запрещён" "SSH on port $SSH_PORT only, keys only, root denied")"
   [[ -z $closed ]] || ok "$(T "Старый порт закрыт и в sshd, и в firewall:" "The old port is closed, in sshd and in the firewall:") ${closed% }"
+  bad=$(ssh_settings_not_in_effect)
+  [[ -z $bad ]] || warn "$(T "Эти настройки SSH не действуют — их перекрывает что-то выше в /etc/ssh/sshd_config или в sshd_config.d:" \
+                            "These SSH settings are not in effect — something earlier in /etc/ssh/sshd_config or in sshd_config.d overrides them:") $bad"
   stash_sshd_config_dist
 }
 
@@ -2205,8 +2243,9 @@ shq() { printf "'%s'" "${1//\'/\'\\\'\'}"; }   # 'a value', safe to paste into a
 print_answers() {
   local v line="sudo HARDEN_LANG=$UI"
   for v in NEW_USER SSH_PORT SSH_PUBKEY EXTRA_PORTS ADMIN_IP AUTO_REBOOT REBOOT_TIME LOCK_ROOT LOCK_OTHER_USERS \
-           INSTALL_CROWDSEC RUN_LYNIS TELEGRAM DISABLE_PING; do
+           SSH_EXTRA_USERS INSTALL_CROWDSEC RUN_LYNIS TELEGRAM DISABLE_PING; do
     [[ $v == REBOOT_TIME && ${AUTO_REBOOT:-no} != yes ]] && continue
+    [[ $v == SSH_EXTRA_USERS && -z ${SSH_EXTRA_USERS:-} ]] && continue
     line+=" $v=$(shq "${!v:-}")"
   done
   echo "$line bash harden.sh"
@@ -2218,7 +2257,14 @@ derive_answers() {
   NEW_USER=$(awk '$1=="AllowUsers"{print $2; exit}' "$SSHD_DROPIN" 2>/dev/null || true)
   SSH_EXTRA_USERS=$(awk '$1=="AllowUsers"{$1=$2=""; sub(/^ +/,""); print; exit}' "$SSHD_DROPIN" 2>/dev/null || true)
   SSH_PORT=$(awk '$1=="Port"{p=$2} END{print p}' "$SSHD_DROPIN" 2>/dev/null || true)
-  ADMIN_IP=$(awk '$1=="ignoreip"{print $5; exit}' "$F2B_JAIL" /etc/fail2ban/jail.local 2>/dev/null || true)
+  # One file at a time: given a file that is not there, awk stops before it reads the next
+  # one, and a server set up by an older version (jail.local only) lost its whitelist
+  ADMIN_IP=""
+  for h in "$F2B_JAIL" /etc/fail2ban/jail.local; do
+    [[ -r $h ]] || continue
+    ADMIN_IP=$(awk '$1=="ignoreip"{print $5; exit}' "$h" || true)
+    break
+  done
   AUTO_REBOOT=no; REBOOT_TIME=04:00
   if grep -qs 'Automatic-Reboot "true"' /etc/apt/apt.conf.d/52-hardening-unattended; then AUTO_REBOOT=yes; fi
   v=$(sed -n 's/.*Automatic-Reboot-Time "\(.*\)";.*/\1/p' /etc/apt/apt.conf.d/52-hardening-unattended 2>/dev/null || true)
@@ -2288,9 +2334,15 @@ run_refresh() {
 # removed. What stays: the installed packages, and the user the setup created.
 run_undo() {
   local -a dirs=(/root/harden-backup-*)
-  local first=${dirs[0]} b f u shell groups g real was now p fw_out
-  [[ -d $first/ssh ]] || die "$(T "Нет резервной копии /root/harden-backup-* с настройками SSH — откатывать не из чего" \
-                                  "No backup /root/harden-backup-* with the SSH settings — nothing to undo from")"
+  local first="" b f u shell groups g real was now p fw_out
+  # The oldest backup that was made before the setup: one that already holds the setup's own
+  # SSH file was taken on a server that was hardened by then, and "restoring" it would put
+  # the hardening back.
+  for b in "${dirs[@]}"; do
+    if [[ -d $b/ssh && ! -e $b/ssh/sshd_config.d/${SSHD_DROPIN##*/} ]]; then first=$b; break; fi
+  done
+  [[ -n $first ]] || die "$(T "Нет резервной копии /root/harden-backup-*, сделанной до настройки, — откатывать не из чего" \
+                              "No backup /root/harden-backup-* from before the setup — nothing to undo from")"
   have_tty || die "$(T "Нужен интерактивный терминал" "An interactive terminal is required")"
   step "$(T "Откат настройки" "Undoing the setup")"
   T "  Вернутся: SSH (порт и способы входа), firewall, root, заблокированные аккаунты, системные файлы." \

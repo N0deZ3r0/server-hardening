@@ -13,7 +13,9 @@ cd "$(dirname "$0")/.."
 
 # The release text is taken from CHANGELOG.md; a version without an entry is refused there,
 # so it is refused here first.
-grep -qx "## $v" CHANGELOG.md || { echo "CHANGELOG.md has no section '## $v' — write it first" >&2; exit 1; }
+for f in CHANGELOG.md CHANGELOG.ru.md; do
+  grep -qx "## $v" "$f" || { echo "$f has no section '## $v' — write it first" >&2; exit 1; }
+done
 
 sed -i -E "s/^HARDEN_VERSION=\".*\"$/HARDEN_VERSION=\"$v\"/" harden.sh
 bash -n harden.sh

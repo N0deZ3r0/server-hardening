@@ -38,7 +38,9 @@ jobs:
               echo "::warning::$tag: $(cat err.txt)"
               continue
             fi
-            if gh release view "$tag" --json body --jq .body | diff -q - notes.md >/dev/null; then
+            # GitHub hands the text back with CRLF line ends; compared as it comes, every
+            # release would look changed on every run
+            if gh release view "$tag" --json body --jq .body | tr -d '\r' | diff -q - notes.md >/dev/null; then
               echo "$tag: up to date"
             elif gh release edit "$tag" --notes-file notes.md >/dev/null; then
               echo "$tag: updated"
