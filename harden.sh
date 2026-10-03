@@ -1091,20 +1091,20 @@ sshd_listens_on() {  # is the unit's own sshd bound to this port?
 # whatever daemon is left on the ports, then start. KillMode=process in ssh.service means
 # the admin's own session survives the stop.
 restart_sshd() {  # restart_sshd port... — the ports the new daemon must end up bound to
-  local p i all
+  local p all
   sshd -t || return 1
   systemctl stop ssh.socket &>/dev/null || true
   systemctl stop "$(ssh_service)" &>/dev/null || true
   # shellcheck disable=SC2086  # CURRENT_SSH_PORTS is a space-separated list
   kill_sshd_listeners_on "$@" $CURRENT_SSH_PORTS
-  for i in 1 2 3 4 5 6 7 8 9 10; do   # give the kernel a moment to release the ports
+  for _ in 1 2 3 4 5 6 7 8 9 10; do   # give the kernel a moment to release the ports
     ss -Hltn 2>/dev/null | grep -qE ":($(tr ' ' '|' <<<"$*"))[[:space:]]" || break
     sleep 0.5
   done
   systemctl start "$(ssh_service)" || return 1
   # "Started" is not enough: sshd carries on when it cannot bind one of several ports,
   # which is exactly how the leftover daemon went unnoticed
-  for i in 1 2 3 4 5 6 7 8 9 10; do
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
     all=yes
     for p in "$@"; do sshd_listens_on "$p" || all=no; done
     [[ $all == yes ]] && return 0
