@@ -5,7 +5,7 @@
 **One command turns a fresh Debian or Ubuntu VPS into a server that only lets in your key — and it will not close the old door until you have walked through the new one.**
 
 [![CI](https://github.com/N0deZ3r0/server-hardening/actions/workflows/ci.yml/badge.svg)](https://github.com/N0deZ3r0/server-hardening/actions/workflows/ci.yml)
-![version](https://img.shields.io/badge/version-2026.10.14-3b5bdb)
+![version](https://img.shields.io/badge/version-2026.10.15-3b5bdb)
 ![Debian](https://img.shields.io/badge/Debian-12%20%2F%2013-a80030)
 ![Ubuntu](https://img.shields.io/badge/Ubuntu-22.04%20%2F%2024.04%20%2F%2026.04-e95420)
 ![bash](https://img.shields.io/badge/bash-single%20file-2f9e44)
@@ -24,7 +24,7 @@ summary, can report to Telegram, and finishes with a Lynis audit. Later, `sudo h
 audits the server without changing anything. The interface is in English and Russian.
 
 ```bash
-curl -fsSLo harden.sh https://github.com/N0deZ3r0/server-hardening/releases/download/v2026.10.14/harden.sh && echo "e95cb9394fb4e764e84880783f7daee35ce67483ed5fca0017f4a034b02ec35d  harden.sh" | sha256sum -c - && sudo bash harden.sh
+curl -fsSLo harden.sh https://github.com/N0deZ3r0/server-hardening/releases/download/v2026.10.15/harden.sh && echo "78c79446aae3e7b2106ecffa1860cb13caa06c3733f4d3e12e32de04e2fad8cc  harden.sh" | sha256sum -c - && sudo bash harden.sh
 ```
 
 The command downloads a fixed release and checks its SHA-256 before running it: if a single
@@ -71,7 +71,9 @@ outside, so most of the script is about not making it.
   checks that no package is being installed.
 - **The root password is never locked** if the new user has no password — otherwise sudo
   would be unreachable.
-- Every file it replaces is copied to `/root/harden-backup-<date>/` first.
+- Every file it replaces or edits in place is copied to `/root/harden-backup-<date>/` first.
+- **Your own fail2ban jails stay.** The script writes its two SSH jails to a file of its
+  own in `jail.d` and leaves an existing `jail.local` alone.
 
 ## What it asks
 
@@ -293,7 +295,7 @@ On a server that is already set up, put the newer script in place of the old one
 download and checksum, without running the setup:
 
 ```bash
-curl -fsSLo harden.sh https://github.com/N0deZ3r0/server-hardening/releases/download/v2026.10.14/harden.sh && echo "e95cb9394fb4e764e84880783f7daee35ce67483ed5fca0017f4a034b02ec35d  harden.sh" | sha256sum -c - && sudo install -m 755 harden.sh /usr/local/sbin/harden
+curl -fsSLo harden.sh https://github.com/N0deZ3r0/server-hardening/releases/download/v2026.10.15/harden.sh && echo "78c79446aae3e7b2106ecffa1860cb13caa06c3733f4d3e12e32de04e2fad8cc  harden.sh" | sha256sum -c - && sudo install -m 755 harden.sh /usr/local/sbin/harden
 ```
 
 That replaces the commands — `--check`, `--ping`, `--lang`, `--setup-telegram` — and leaves
@@ -373,6 +375,11 @@ Knowingly open, with the reason for each:
   `crowdsec` and `crowdsec-firewall-bouncer-nftables` can come from there — a compromised
   repository still cannot ship a new openssh or sudo. If the vendor rotates the key,
   CrowdSec is skipped until the fingerprint here is updated; CI checks it on every push.
+- **The audit rule set is loaded as a whole** from `/etc/audit/rules.d`. Rule files that
+  were already there are kept and loaded together with ours; rules typed in with
+  `auditctl` and saved nowhere are gone after the reload, as after any restart.
+- **The IP whitelist covers the SSH jails only.** Jails you add yourself keep fail2ban's
+  own defaults — backend, action, ban time — and do not know about the whitelisted IP.
 - **USB storage is disabled** — irrelevant on a VPS, noticeable on bare metal, where the
   final report says so and how to undo it.
 - **Lynis suggestions left alone:** separate `/home` `/tmp` `/var` partitions (only

@@ -517,6 +517,54 @@ jobs:
           test "$(printf '%s\n' "$rules" | grep -c 'admin_rule')" = 1
           test "$(printf '%s\n' "$rules" | grep -c -- '-w /etc/passwd ')" = 1
 
+      - name: fail2ban — the admin's jail.local is kept, ours goes to jail.d
+        # The setup used to write jail.local whole, wiping the jails of other services.
+        run: |
+          sudo rm -f /etc/fail2ban/fail2ban.local
+          # an admin's jail.local: a ban time of their own and a jail of their own
+          printf '[DEFAULT]\nbantime = 2h\n\n[nginx-http-auth]\nenabled = false\nport = 8080\n' | sudo tee /etc/fail2ban/jail.local >/dev/null
+          sudo bash -c 'source ./harden.sh; SSH_PORT=2222; ADMIN_IP=203.0.113.5; BACKUP_DIR=/root/ci-f2b; setup_fail2ban'
+          grep -q 'nginx-http-auth' /etc/fail2ban/jail.local
+          sudo test -f /root/ci-f2b/jail.local
+          sudo cat /etc/fail2ban/jail.d/99-hardening.local
+          # what the daemon really runs with: the sshd jail up, our whitelist, and our ban
+          # time rather than the 2h from jail.local — the file in jail.d is read last
+          sudo fail2ban-client status sshd
+          sudo fail2ban-client get sshd ignoreip | grep -F 203.0.113.5
+          test "$(sudo fail2ban-client get sshd bantime)" = 3600
+          sudo fail2ban-client status recidive
+          # a jail.local written by an earlier version of this script is ours: it is
+          # replaced, and a copy is kept
+          sudo tee /etc/fail2ban/jail.local >/dev/null <<'OLD'
+          [DEFAULT]
+          backend            = systemd
+          bantime            = 1h
+          bantime.increment  = true
+          bantime.factor     = 2
+          bantime.maxtime    = 4w
+          findtime           = 10m
+          maxretry           = 4
+          ignoreip           = 127.0.0.1/8 ::1 198.51.100.7
+          banaction          = ufw
+
+          [sshd]
+          enabled  = true
+          port     = 10022
+          mode     = aggressive
+
+          [recidive]
+          enabled  = true
+          backend  = auto
+          logpath  = /var/log/fail2ban.log
+          bantime  = 4w
+          findtime = 1d
+          maxretry = 3
+          OLD
+          sudo bash -c 'source ./harden.sh; SSH_PORT=2222; ADMIN_IP=; BACKUP_DIR=/root/ci-f2b2; setup_fail2ban'
+          sudo test ! -e /etc/fail2ban/jail.local
+          sudo grep -q 'port     = 10022' /root/ci-f2b2/jail.local
+          sudo fail2ban-client status sshd
+
   containers:
     name: --check in a container (${{ matrix.image }})
     # The full setup needs a real machine; the audit does not. A plain Docker container is

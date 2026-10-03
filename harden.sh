@@ -38,7 +38,7 @@ set -Eeuo pipefail
 # explicitly where it is written.
 umask 022
 
-HARDEN_VERSION="2026.10.14"
+HARDEN_VERSION="2026.10.15"
 LOG_FILE="/var/log/harden.log"
 REPORT_FILE="/root/harden-report.txt"
 BACKUP_DIR="/root/harden-backup-$(date +%Y%m%d-%H%M%S)"
@@ -195,6 +195,14 @@ preflight() {
 
   mkdir -p "$BACKUP_DIR"
   cp -a /etc/ssh "$BACKUP_DIR/ssh"
+  # The other files this script replaces or edits in place, so that "the originals are
+  # in the backup" holds for each of them (jail.local and hosts are copied where they
+  # are handled)
+  local bf
+  for bf in /etc/login.defs /etc/issue /etc/issue.net /etc/apt/apt.conf.d/20auto-upgrades \
+            /etc/default/apport /etc/default/sysstat /etc/default/motd-news; do
+    if [[ -e $bf ]]; then cp -a --parents "$bf" "$BACKUP_DIR/"; fi
+  done
   [[ -d /etc/ufw ]] && cp -a /etc/ufw "$BACKUP_DIR/ufw"
   exec > >(tee -a "$LOG_FILE") 2>&1
 
@@ -888,37 +896,75 @@ fail2ban_set_ipv6() {
   printf '[DEFAULT]\nallowipv6 = auto\n' >/etc/fail2ban/fail2ban.local
 }
 
+F2B_JAIL=/etc/fail2ban/jail.d/99-hardening.local
+
+# jail.local the way this script wrote it up to 2026.10.14: ours, and replaced by the file
+# above. A jail.local with anything else in it is the admin's and is not touched.
+jail_local_is_ours() {
+  local f=/etc/fail2ban/jail.local
+  [[ -f $f ]] || return 1
+  grep -q '^bantime\.maxtime    = 4w$' "$f" && grep -q '^mode     = aggressive$' "$f" \
+    && [[ -z $(grep -E '^\[' "$f" | grep -vxE '\[(DEFAULT|sshd|recidive)\]') ]]
+}
+
 setup_fail2ban() {
   step "fail2ban"
   fail2ban_set_ipv6
-  cat >/etc/fail2ban/jail.local <<EOF
-[DEFAULT]
-backend            = systemd
-bantime            = 1h
-bantime.increment  = true
-bantime.factor     = 2
-bantime.maxtime    = 4w
-findtime           = 10m
-maxretry           = 4
-ignoreip           = 127.0.0.1/8 ::1 ${ADMIN_IP}
-banaction          = ufw
-
+  # jail.local belongs to the admin: jails for nginx, postfix and the rest live there, and
+  # writing it whole wiped them. Ours is a .local file in jail.d, which fail2ban reads
+  # after jail.local — the two SSH jails get these settings whatever came before, and
+  # nothing is set in [DEFAULT], so no other jail changes its backend, action or ban time.
+  if [[ -f /etc/fail2ban/jail.local ]]; then
+    mkdir -p "$BACKUP_DIR"
+    cp -a /etc/fail2ban/jail.local "$BACKUP_DIR/jail.local" 2>/dev/null || true
+    if jail_local_is_ours; then
+      rm -f /etc/fail2ban/jail.local
+    else
+      info "$(T "Твой /etc/fail2ban/jail.local оставлен как есть; защита SSH записана в $F2B_JAIL" \
+                "Your /etc/fail2ban/jail.local is left as it is; SSH protection is written to $F2B_JAIL")"
+    fi
+  fi
+  mkdir -p /etc/fail2ban/jail.d
+  cat >"$F2B_JAIL" <<EOF
+# Written by harden.sh. Read after jail.local, so these values hold for the two jails
+# below; nothing else is set here.
 [sshd]
-enabled  = true
-port     = $SSH_PORT
-mode     = aggressive
+enabled   = true
+backend   = systemd
+port      = $SSH_PORT
+mode      = aggressive
+banaction = ufw
+ignoreip  = 127.0.0.1/8 ::1 ${ADMIN_IP}
+bantime   = 1h
+bantime.increment = true
+bantime.factor    = 2
+bantime.maxtime   = 4w
+findtime  = 10m
+maxretry  = 4
 
 [recidive]
-enabled  = true
-backend  = auto
-logpath  = /var/log/fail2ban.log
-bantime  = 4w
-findtime = 1d
-maxretry = 3
+enabled   = true
+backend   = auto
+logpath   = /var/log/fail2ban.log
+banaction = ufw
+ignoreip  = 127.0.0.1/8 ::1 ${ADMIN_IP}
+bantime   = 4w
+findtime  = 1d
+maxretry  = 3
 EOF
-  systemctl enable fail2ban >/dev/null 2>&1
-  systemctl restart fail2ban
-  ok "$(T "fail2ban включён (статус: fail2ban-client status sshd)" "fail2ban enabled (status: fail2ban-client status sshd)")"
+  systemctl enable fail2ban >/dev/null 2>&1 || true
+  systemctl restart fail2ban || true
+  # "Restarted" is not "protecting": with someone else's jail.local in play, ask the
+  # daemon whether the sshd jail is really up
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    fail2ban-client status sshd &>/dev/null && break
+    sleep 1
+  done
+  if fail2ban-client status sshd &>/dev/null; then
+    ok "$(T "fail2ban включён (статус: fail2ban-client status sshd)" "fail2ban enabled (status: fail2ban-client status sshd)")"
+  else
+    warn "$(T "fail2ban не поднял защиту SSH — смотри: journalctl -u fail2ban -n 30" "fail2ban did not bring up SSH protection — see: journalctl -u fail2ban -n 30")"
+  fi
 }
 
 # ---------- login summary ----------
