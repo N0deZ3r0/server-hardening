@@ -137,11 +137,7 @@ jobs:
           echo "=== while read:"; cat j_read.out
           echo "=== while read -t 1:"; cat j_readt.out
           echo "=== feed without journalctl, read -t 1:"
-          { sleep 2; printf 'a1
-a2
-a3
-a4
-'; sleep 2; } | while :; do if IFS= read -r -t 1 l; then echo "T: $l"; elif [ $? -le 128 ]; then break; fi; done
+          { sleep 2; printf '%s\n' a1 a2 a3 a4; sleep 2; } | while :; do if IFS= read -r -t 1 l; then echo "T: $l"; elif [ $? -le 128 ]; then break; fi; done
           set -x
           sudo systemctl start harden-login-watch
           # Every SSH login is reported, read from the journal — and only logins. The first
