@@ -30,7 +30,7 @@
 # =============================================================================
 set -Eeuo pipefail
 
-HARDEN_VERSION="2026.10.1"
+HARDEN_VERSION="2026.10.2"
 LOG_FILE="/var/log/harden.log"
 REPORT_FILE="/root/harden-report.txt"
 BACKUP_DIR="/root/harden-backup-$(date +%Y%m%d-%H%M%S)"
@@ -220,7 +220,7 @@ confirm_existing_user() {
   return 1
 }
 
-port_busy() { ss -Hltn "sport = :$1" 2>/dev/null | grep -q .; }
+port_busy() { [[ -n $(ss -Hltn "sport = :$1" 2>/dev/null) ]]; }
 
 collect_answers() {
   step "$(T "Настройка параметров" "Settings")"
@@ -824,7 +824,9 @@ setup_crowdsec_repo() {
   else
     cp "$tmp/key.asc" "$tmp/key.gpg"
   fi
-  fpr=$(gpg --batch --homedir "$tmp" --show-keys --with-colons "$tmp/key.gpg" 2>/dev/null | awk -F: '/^fpr/{print $10; exit}')
+  # Captured, then parsed: awk exiting on the first fpr line must not SIGPIPE gpg (pipefail)
+  fpr=$(gpg --batch --homedir "$tmp" --show-keys --with-colons "$tmp/key.gpg" 2>/dev/null || true)
+  fpr=$(awk -F: '/^fpr/{print $10; exit}' <<<"$fpr")
   if [[ $fpr != "$CROWDSEC_KEY_FPR" ]]; then
     rm -rf "$tmp"
     warn "$(T "Отпечаток ключа CrowdSec не совпал (ожидался $CROWDSEC_KEY_FPR, получен ${fpr:-ничего}) — репозиторий не подключён" \
@@ -1352,7 +1354,7 @@ chk() {  # chk pass|warn|fail "text"
 }
 
 run_check() {
-  local cfg v kex weak n list u
+  local cfg v kex weak n list u out
   . /etc/os-release
   step "$(T "Проверка сервера — ничего не меняется" "Server check — nothing is changed")"
   echo "  ${PRETTY_NAME:-?}, kernel $(uname -r)"
@@ -1401,8 +1403,12 @@ run_check() {
   [[ -z $list ]] && chk pass "$(T "Нет sudo без пароля" "No passwordless sudo")" || chk warn "$(T "sudo без пароля (NOPASSWD):" "Passwordless sudo (NOPASSWD):") $list"
 
   echo; echo "${C_BOLD}$(T "Сеть и защита" "Network and protection")${C_0}"
-  if ufw status 2>/dev/null | grep -q '^Status: active'; then
-    ufw status verbose 2>/dev/null | grep -q 'deny (incoming)' && chk pass "$(T "UFW включён, входящие запрещены" "UFW on, incoming denied")" \
+  # Output is captured first and searched afterwards. `cmd | grep -q` under pipefail is a
+  # trap: grep -q exits at the first match, the writer dies of SIGPIPE, and the pipeline
+  # reports failure for a check that passed — seen live on the auto-updates line below.
+  out=$(ufw status verbose 2>/dev/null || true)
+  if grep -q '^Status: active' <<<"$out"; then
+    grep -q 'deny (incoming)' <<<"$out" && chk pass "$(T "UFW включён, входящие запрещены" "UFW on, incoming denied")" \
       || chk warn "$(T "UFW включён, но входящие не запрещены по умолчанию" "UFW on, but incoming is not denied by default")"
   else
     chk fail "$(T "Firewall UFW выключен" "UFW firewall is off")"
@@ -1422,7 +1428,8 @@ run_check() {
     && chk pass "$(T "Уведомления в Telegram" "Telegram alerts")" || chk warn "$(T "Уведомлений нет (sudo harden --setup-telegram)" "No alerts (sudo harden --setup-telegram)")"
 
   echo; echo "${C_BOLD}$(T "Обновления и ядро" "Updates and kernel")${C_0}"
-  apt-config dump 2>/dev/null | grep -q 'APT::Periodic::Unattended-Upgrade "1"' \
+  out=$(apt-config dump 2>/dev/null || true)
+  grep -q 'APT::Periodic::Unattended-Upgrade "1"' <<<"$out" \
     && chk pass "$(T "Автообновления безопасности" "Automatic security updates")" || chk fail "$(T "Автообновления выключены" "Automatic updates off")"
   n=$(apt-get -s -o Debug::NoLocking=1 upgrade 2>/dev/null | grep -c '^Inst' || true)
   (( n == 0 )) && chk pass "$(T "Все обновления установлены" "All updates installed")" || chk warn "$(T "Ожидают установки:" "Pending updates:") $n"

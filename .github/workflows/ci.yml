@@ -73,6 +73,15 @@ jobs:
           test "$rc" = 1
           out=$(sudo HARDEN_LANG=ru bash harden.sh --check 2>&1) || true
           echo "$out" | grep -q 'Итог:'
+          # A check that should pass must be reported as passing. Found live: with the
+          # setting on, `apt-config dump | grep -q` died of SIGPIPE under pipefail and the
+          # line came out as a failure.
+          echo 'APT::Periodic::Unattended-Upgrade "1";' | sudo tee /etc/apt/apt.conf.d/99ci-unattended >/dev/null
+          for _ in 1 2 3 4 5; do
+            out=$(sudo HARDEN_LANG=en bash harden.sh --check 2>&1) || true
+            echo "$out" | grep -q '✓ Automatic security updates' || { echo "$out"; echo "::error::false failure on auto-updates"; exit 1; }
+          done
+          sudo rm /etc/apt/apt.conf.d/99ci-unattended
 
       - name: Telegram alerts against a fake Bot API
         # A local stand-in for api.telegram.org records what would have been sent.
