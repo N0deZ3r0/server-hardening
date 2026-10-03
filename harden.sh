@@ -30,7 +30,7 @@
 # =============================================================================
 set -Eeuo pipefail
 
-HARDEN_VERSION="2026.10.0"
+HARDEN_VERSION="2026.10.1"
 LOG_FILE="/var/log/harden.log"
 REPORT_FILE="/root/harden-report.txt"
 BACKUP_DIR="/root/harden-backup-$(date +%Y%m%d-%H%M%S)"
@@ -1149,8 +1149,11 @@ tg_api() {
 
 ask_telegram() {  # sets TG_TOKEN / TG_CHAT_ID, or TELEGRAM=no if the admin gives up
   local token=${TG_TOKEN:-} chat=${TG_CHAT_ID:-} bot=""
-  T "  1) В Telegram откройте @BotFather → /newbot → скопируйте токен бота" \
-    "  1) In Telegram open @BotFather → /newbot → copy the bot token"; echo
+  # A direct link, not "search for BotFather": the search is full of look-alike bots
+  T "  1) Откройте https://t.me/BotFather — официальный, с синей галочкой (в поиске много подделок)" \
+    "  1) Open https://t.me/BotFather — the official one with the blue check mark (search shows many fakes)"; echo
+  T "     Отправьте /newbot, задайте имя и username (должен кончаться на bot), скопируйте токен" \
+    "     Send /newbot, give a name and a username (must end in bot), copy the token"; echo
   until [[ $token =~ ^[0-9]{5,}:[A-Za-z0-9_-]{30,}$ ]] && tg_api "$token" getMe | grep -q '"ok":true'; do
     [[ -n $token ]] && warn "$(T "Telegram не принял токен" "Telegram rejected the token")"
     read -r -s -p "$(T "Токен бота (ввод скрыт, пусто — пропустить): " "Bot token (hidden, empty to skip): ")" token </dev/tty; echo

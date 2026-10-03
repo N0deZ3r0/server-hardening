@@ -5,7 +5,7 @@
 **Одна команда превращает свежий VPS на Debian или Ubuntu в сервер, который пускает только по вашему ключу, — и не закроет старую дверь, пока вы не прошли через новую.**
 
 [![CI](https://github.com/N0deZ3r0/server-hardening/actions/workflows/ci.yml/badge.svg)](https://github.com/N0deZ3r0/server-hardening/actions/workflows/ci.yml)
-![version](https://img.shields.io/badge/version-2026.10.0-3b5bdb)
+![version](https://img.shields.io/badge/version-2026.10.1-3b5bdb)
 ![Debian](https://img.shields.io/badge/Debian-12%20%2F%2013-a80030)
 ![Ubuntu](https://img.shields.io/badge/Ubuntu-22.04%20%2F%2024.04%20%2F%2026.04-e95420)
 ![bash](https://img.shields.io/badge/bash-%D0%BE%D0%B4%D0%B8%D0%BD%20%D1%84%D0%B0%D0%B9%D0%BB-2f9e44)
@@ -25,7 +25,7 @@ CrowdSec, усиливает ядро, включает автообновлен
 Интерфейс — на русском и английском.
 
 ```bash
-curl -fsSLo harden.sh https://github.com/N0deZ3r0/server-hardening/releases/download/v2026.10.0/harden.sh && echo "47d9ae5cbc03e80e34bc15396d6b419e62ffe487d0552b0fb08de3b95e701a7d  harden.sh" | sha256sum -c - && sudo bash harden.sh
+curl -fsSLo harden.sh https://github.com/N0deZ3r0/server-hardening/releases/download/v2026.10.1/harden.sh && echo "9bb4adcd653635f08048f3b47f8d3fecdfd89c2b82deac38951dc814811814b9  harden.sh" | sha256sum -c - && sudo bash harden.sh
 ```
 
 Команда скачивает конкретный релиз и сверяет его SHA-256 до запуска: если отличается хоть
@@ -147,7 +147,9 @@ unattended-upgrades пропускать обновления безопасно
 ## Уведомления в Telegram
 
 По желанию, вопрос задаётся при настройке; на уже настроенном сервере —
-`sudo harden --setup-telegram`. Скрипт проверяет токен бота у Telegram, сам находит ваш
+`sudo harden --setup-telegram`. Бота создавайте в https://t.me/BotFather — официальном, с
+синей галочкой: поиск по имени выдаёт подделки. Скрипт проверяет токен бота у Telegram, сам
+находит ваш
 chat id, когда вы нажмёте Start в боте, и присылает тестовое сообщение — вы подтверждаете,
 что оно пришло, и только потом что-либо устанавливается.
 

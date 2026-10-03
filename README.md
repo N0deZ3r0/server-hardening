@@ -5,7 +5,7 @@
 **One command turns a fresh Debian or Ubuntu VPS into a server that only lets in your key — and it will not close the old door until you have walked through the new one.**
 
 [![CI](https://github.com/N0deZ3r0/server-hardening/actions/workflows/ci.yml/badge.svg)](https://github.com/N0deZ3r0/server-hardening/actions/workflows/ci.yml)
-![version](https://img.shields.io/badge/version-2026.10.0-3b5bdb)
+![version](https://img.shields.io/badge/version-2026.10.1-3b5bdb)
 ![Debian](https://img.shields.io/badge/Debian-12%20%2F%2013-a80030)
 ![Ubuntu](https://img.shields.io/badge/Ubuntu-22.04%20%2F%2024.04%20%2F%2026.04-e95420)
 ![bash](https://img.shields.io/badge/bash-single%20file-2f9e44)
@@ -24,7 +24,7 @@ summary, can report to Telegram, and finishes with a Lynis audit. Later, `sudo h
 audits the server without changing anything. The interface is in English and Russian.
 
 ```bash
-curl -fsSLo harden.sh https://github.com/N0deZ3r0/server-hardening/releases/download/v2026.10.0/harden.sh && echo "47d9ae5cbc03e80e34bc15396d6b419e62ffe487d0552b0fb08de3b95e701a7d  harden.sh" | sha256sum -c - && sudo bash harden.sh
+curl -fsSLo harden.sh https://github.com/N0deZ3r0/server-hardening/releases/download/v2026.10.1/harden.sh && echo "9bb4adcd653635f08048f3b47f8d3fecdfd89c2b82deac38951dc814811814b9  harden.sh" | sha256sum -c - && sudo bash harden.sh
 ```
 
 The command downloads a fixed release and checks its SHA-256 before running it: if a single
@@ -145,7 +145,9 @@ On a server hardened by an earlier version: `sudo bash harden.sh --install-statu
 ## Telegram alerts
 
 Optional, asked during setup; on a server that is already hardened:
-`sudo harden --setup-telegram`. The script checks the bot token with Telegram, finds your
+`sudo harden --setup-telegram`. Create the bot at https://t.me/BotFather — the official one
+with the blue check mark; searching for the name turns up look-alikes. The script checks the
+bot token with Telegram, finds your
 chat id once you press Start in the bot, and sends a test message that you confirm before
 anything is installed.
 
