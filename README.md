@@ -317,7 +317,10 @@ Knowingly open, with the reason for each:
   under the script's own `UMASK 027` — and each is now replayed in CI. The failure alert is
   verified in CI only, with a unit that really fails, against a stand-in for the Bot API.
 - **Not answering ping is obscurity, not protection.** It takes the server out of ping
-  sweeps; a port scan finds it just the same. It also blinds anything that checks the
+  sweeps; a port scan finds it just the same. The practical reason to turn it on is a VPN
+  server: detectors such as 2ip compare the ping time to your address with the latency
+  seen from the browser ("two-way ping"), and with no answer that test has nothing to
+  measure. Other signals stay — above all, that the address belongs to a hosting provider. It also blinds anything that checks the
   server by ping — including some providers' monitoring, which will report it as down — so
   it is off unless you ask. Only echo requests are ignored (a kernel setting in its own
   file); the ICMP that path MTU discovery and IPv6 need is untouched.
