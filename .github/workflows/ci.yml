@@ -97,11 +97,65 @@ jobs:
           sudo sysctl --system >/dev/null
           test "$(sysctl -n net.ipv4.icmp_echo_ignore_all)" = 1
           sudo HARDEN_LANG=en bash harden.sh --check | grep -F 'Ping: not answered' || true
+          # ...and it has to survive UFW. UFW ships its own sysctl file with
+          # icmp_echo_ignore_all=0 and re-applies it on every start, after sysctl.d: on a
+          # live server the full run said "no longer answers ping" and ping kept working.
+          grep -n 'icmp_echo_ignore_all' /etc/ufw/sysctl.conf
+          sudo ufw --force enable
+          test "$(sysctl -n net.ipv4.icmp_echo_ignore_all)" = 1
+          sudo ufw reload
+          test "$(sysctl -n net.ipv4.icmp_echo_ignore_all)" = 1
+          if ping -c1 -W2 127.0.0.1 >/dev/null; then echo "::error::UFW turned ping back on"; exit 1; fi
           sudo HARDEN_LANG=en bash harden.sh --ping on
           test "$(sysctl -n net.ipv4.icmp_echo_ignore_all)" = 0
           test ! -e /etc/sysctl.d/99-hardening-ping.conf
           ping -c1 -W2 127.0.0.1 >/dev/null
+          # "on" has to hold through UFW as well
+          sudo ufw reload
+          test "$(sysctl -n net.ipv4.icmp_echo_ignore_all)" = 0
+          ping -c1 -W2 127.0.0.1 >/dev/null
+          sudo ufw disable
           if sudo HARDEN_LANG=en bash harden.sh --ping maybe; then echo "::error::a wrong argument was accepted"; exit 1; fi
+
+      - name: A leftover sshd does not survive the port switch
+        # Replays what a live run showed: an sshd that systemd was not going to stop held
+        # port 22 through both restarts, on the old config; the new daemon could not bind
+        # 22 and nothing noticed.
+        run: |
+          set -x
+          sudo systemctl disable --now ssh.socket 2>/dev/null || true
+          sudo systemctl stop ssh 2>/dev/null || true
+          sudo mkdir -p /run/sshd
+          sudo ssh-keygen -A                           # host keys, if the image has none
+          sudo /usr/sbin/sshd -o PidFile=none          # a daemon outside the unit, on port 22
+          stray=$(sudo ss -Hltnp 'sport = :22' | grep -oE '"sshd",pid=[0-9]+' | grep -oE '[0-9]+$' | sort -u)
+          test -n "$stray"
+          # the audit sees a daemon on a port the unit's config will not have
+          printf 'Port 2223\n' | sudo tee /etc/ssh/sshd_config.d/00-ci.conf >/dev/null
+          out=$(sudo HARDEN_LANG=en bash harden.sh --check 2>&1) || true
+          echo "$out" | grep -F 'sshd also listens outside its config: 22'
+          # the switch: both ports, as in stage 1
+          printf 'Port 22\nPort 2223\n' | sudo tee /etc/ssh/sshd_config.d/00-ci.conf >/dev/null
+          sudo bash -c 'source ./harden.sh; CURRENT_SSH_PORTS=22; restart_sshd 22 2223'
+          main=$(systemctl show -p MainPID --value ssh)
+          test "$main" != 0 && test "$main" != "$stray"
+          sudo ss -Hltnp 'sport = :22'   | grep -q "\"sshd\",pid=$main,"
+          sudo ss -Hltnp 'sport = :2223' | grep -q "\"sshd\",pid=$main,"
+          if sudo kill -0 "$stray" 2>/dev/null; then echo "::error::the leftover sshd is still alive"; exit 1; fi
+          # stage 2: one port, and nothing left on the old one
+          printf 'Port 2223\n' | sudo tee /etc/ssh/sshd_config.d/00-ci.conf >/dev/null
+          sudo bash -c 'source ./harden.sh; CURRENT_SSH_PORTS=22; restart_sshd 2223'
+          test -z "$(sudo ss -Hltnp 'sport = :22')"
+          out=$(sudo HARDEN_LANG=en bash harden.sh --check 2>&1) || true
+          echo "$out" | grep -F 'sshd listens only on configured ports'
+          # a daemon that cannot bind what it was asked to is reported, not accepted
+          python3 -m http.server 2224 --bind 0.0.0.0 >/dev/null 2>&1 &
+          sleep 1
+          printf 'Port 2223\nPort 2224\n' | sudo tee /etc/ssh/sshd_config.d/00-ci.conf >/dev/null
+          if sudo bash -c 'source ./harden.sh; CURRENT_SSH_PORTS=2223; restart_sshd 2223 2224'; then echo "::error::accepted an sshd that did not bind every port"; exit 1; fi
+          kill %1 2>/dev/null || true
+          sudo rm -f /etc/ssh/sshd_config.d/00-ci.conf
+          sudo systemctl stop ssh
 
       - name: Telegram alerts against a fake Bot API
         # A local stand-in for api.telegram.org records what would have been sent.

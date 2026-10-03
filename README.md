@@ -5,7 +5,7 @@
 **One command turns a fresh Debian or Ubuntu VPS into a server that only lets in your key — and it will not close the old door until you have walked through the new one.**
 
 [![CI](https://github.com/N0deZ3r0/server-hardening/actions/workflows/ci.yml/badge.svg)](https://github.com/N0deZ3r0/server-hardening/actions/workflows/ci.yml)
-![version](https://img.shields.io/badge/version-2026.10.7-3b5bdb)
+![version](https://img.shields.io/badge/version-2026.10.8-3b5bdb)
 ![Debian](https://img.shields.io/badge/Debian-12%20%2F%2013-a80030)
 ![Ubuntu](https://img.shields.io/badge/Ubuntu-22.04%20%2F%2024.04%20%2F%2026.04-e95420)
 ![bash](https://img.shields.io/badge/bash-single%20file-2f9e44)
@@ -24,7 +24,7 @@ summary, can report to Telegram, and finishes with a Lynis audit. Later, `sudo h
 audits the server without changing anything. The interface is in English and Russian.
 
 ```bash
-curl -fsSLo harden.sh https://github.com/N0deZ3r0/server-hardening/releases/download/v2026.10.7/harden.sh && echo "2ca638d00aa77ad559afe3317c16b12944b858110e3fb018d00961d4407a652e  harden.sh" | sha256sum -c - && sudo bash harden.sh
+curl -fsSLo harden.sh https://github.com/N0deZ3r0/server-hardening/releases/download/v2026.10.8/harden.sh && echo "cab8fd0208b35808911b0267c0331e8790360ae1c3c8f422650ac10c7333e38a  harden.sh" | sha256sum -c - && sudo bash harden.sh
 ```
 
 The command downloads a fixed release and checks its SHA-256 before running it: if a single
@@ -96,7 +96,7 @@ Then a password for the new user — sudo needs it.
 | **Brute force** | fail2ban (`sshd` aggressive + `recidive`, bans grow up to 4 weeks), optional CrowdSec with the nftables bouncer |
 | **Kernel** | `kptr_restrict`, `dmesg_restrict`, BPF hardening, `ptrace_scope`, protected links/FIFOs, anti-spoofing and redirect filters, SYN cookies, BBR; unused filesystems and protocols (dccp, sctp, rds, tipc) disabled |
 | **Audit** | auditd rules for accounts, sudoers, SSH config, cron, kernel modules, clock, commands run as root; process accounting; sysstat |
-| **Updates** | unattended-upgrades for security updates, needrestart, optional nightly reboot |
+| **Updates** | unattended-upgrades for security updates, needrestart, optional nightly reboot; local config files are kept on upgrade (`--force-confold`), so a package whose config this script edited is not held back |
 | **System** | AppArmor, chrony, persistent size-capped journal, no core dumps, `UMASK 027`, per-user `/tmp` (libpam-tmpdir), ModemManager and udisks2 off, legal pre-login banner |
 | **Login** | The stock Ubuntu greeting (Welcome, ESM, ads, legal) replaced by `server-status` |
 | **Alerts** | Optional Telegram messages: every SSH login, a protective service failing, boot, a daily report |
@@ -137,9 +137,9 @@ update count comes from Ubuntu's cache, so logging in does not wait for apt. A `
 required` line appears when a new kernel is pending; free RAM and disk turn yellow below
 25% and red below 10%.
 
-The stock greeting is switched off with `dpkg-statoverride` rather than by editing files:
-the setting survives package upgrades, and an edited config file would make
-unattended-upgrades skip security updates for the package that owns it.
+The stock greeting is switched off with `dpkg-statoverride` rather than by `chmod` or by
+editing files: the override survives package upgrades, where a plain `chmod` is undone the
+next time the package is updated.
 
 On a server hardened by an earlier version: `sudo bash harden.sh --install-status`.
 
@@ -165,7 +165,7 @@ attention before you happen to log in.
 How it is built, and why:
 
 - **Logins are read from the journal** by a small service, so neither PAM nor `sshd_config`
-  is edited — an edited package config would make unattended-upgrades skip that package.
+  is edited.
 - **Failure alerts are systemd `OnFailure=` drop-ins** — the script's own files next to the
   units, removable by deleting them.
 - **The bot token** is stored in `/etc/harden/telegram.conf`, readable by root only, and is
@@ -309,12 +309,12 @@ Knowingly open, with the reason for each:
 - **Live-tested on one system.** Ubuntu 24.04 on KVM ran end to end several times; the
   other versions are supported by design — version checks, algorithm filtering — not by a
   run on each.
-- **Telegram alerts and `--check` have run on one live server** (Ubuntu 24.04): bot setup,
-  the login alert with merging of paired connections, the boot alert, the daily report and
-  the audit. That run found five things CI had missed — a false failure in the audit,
-  key-lookup log lines reported as logins, two alerts per connect from clients that open a
-  second connection, `journalctl -f -n 0` dropping lines, and files written unreadable
-  under the script's own `UMASK 027` — and each is now replayed in CI. The failure alert is
+- **Live runs are on one server** (Ubuntu 24.04, KVM): the full setup from a clean image,
+  Telegram alerts, `--check`. Those runs found seven things CI had missed — a false failure
+  in the audit, key-lookup log lines reported as logins, two alerts per connect from clients
+  that open a second connection, `journalctl -f -n 0` dropping lines, files written
+  unreadable under the script's own `UMASK 027`, UFW turning ping back on, and an sshd left
+  on the old port through the switch — and each is now replayed in CI. The failure alert is
   verified in CI only, with a unit that really fails, against a stand-in for the Bot API.
 - **Not answering ping is obscurity, not protection.** It takes the server out of ping
   sweeps; a port scan finds it just the same. The practical reason to turn it on is a VPN
@@ -322,8 +322,10 @@ Knowingly open, with the reason for each:
   seen from the browser ("two-way ping"), and with no answer that test has nothing to
   measure. Other signals stay — above all, that the address belongs to a hosting provider. It also blinds anything that checks the
   server by ping — including some providers' monitoring, which will report it as down — so
-  it is off unless you ask. Only echo requests are ignored (a kernel setting in its own
-  file); the ICMP that path MTU discovery and IPv6 need is untouched.
+  it is off unless you ask. Only echo requests are ignored; the ICMP that path MTU discovery
+  and IPv6 need is untouched. The setting is written twice — in a sysctl file of its own
+  and in UFW's `sysctl.conf`, which UFW re-applies on every start and which otherwise turns
+  ping back on.
 - **Telegram sees your alerts.** Messages carry the hostname and the IP addresses of
   logins and pass through Telegram's servers. Anyone with root on the server can read the
   bot token and write to that chat as the bot — use a bot made for this server only.

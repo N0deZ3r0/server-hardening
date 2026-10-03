@@ -37,7 +37,7 @@ set -Eeuo pipefail
 # explicitly where it is written.
 umask 022
 
-HARDEN_VERSION="2026.10.7"
+HARDEN_VERSION="2026.10.8"
 LOG_FILE="/var/log/harden.log"
 REPORT_FILE="/root/harden-report.txt"
 BACKUP_DIR="/root/harden-backup-$(date +%Y%m%d-%H%M%S)"
@@ -470,11 +470,26 @@ lock_other_users() {
 }
 
 # ---------- ping ----------
-# Its own sysctl file, so it can be switched without touching the rest. UFW's before.rules
-# is left alone: it belongs to the ufw package, and an edited package config makes
-# unattended-upgrades skip that package. Only echo requests are ignored — path MTU
-# discovery and IPv6 neighbour discovery use other ICMP types and keep working.
+# Only echo requests are ignored — path MTU discovery and IPv6 neighbour discovery use
+# other ICMP types and keep working.
+#
+# The setting has to live in two places. Our own sysctl.d file is what the kernel reads at
+# boot; but UFW ships /etc/ufw/sysctl.conf with icmp_echo_ignore_all=0 and re-applies it
+# every time it starts, after sysctl.d. With only our file, the first full run reported
+# "no longer answers ping" and the server went on answering (seen live). So the same
+# value is written into UFW's file too.
 PING_SYSCTL=/etc/sysctl.d/99-hardening-ping.conf
+UFW_SYSCTL=/etc/ufw/sysctl.conf
+
+ufw_sysctl_set() {  # ufw_sysctl_set net/ipv4/key value — UFW's own syntax uses slashes
+  [[ -f $UFW_SYSCTL ]] || return 0
+  if grep -qE "^[#[:space:]]*$1=" "$UFW_SYSCTL"; then
+    sed -i -E "s|^[#[:space:]]*$1=.*|$1=$2|" "$UFW_SYSCTL"
+  else
+    echo "$1=$2" >>"$UFW_SYSCTL"
+  fi
+}
+
 set_ping() {  # set_ping off|on
   case ${1:-} in
     off)
@@ -484,6 +499,7 @@ net.ipv4.icmp_echo_ignore_all = 1
 net.ipv6.icmp.echo_ignore_all = 1
 EOF
       chmod 644 "$PING_SYSCTL"
+      ufw_sysctl_set net/ipv4/icmp_echo_ignore_all 1
       # -e: the IPv6 key is missing on old kernels and where IPv6 is disabled
       sysctl -e -q -p "$PING_SYSCTL" 2>/dev/null \
         || warn "$(T "Не удалось применить (нормально для контейнеров)" "Could not apply it (normal in containers)")"
@@ -492,6 +508,7 @@ EOF
       ;;
     on)
       rm -f "$PING_SYSCTL"
+      ufw_sysctl_set net/ipv4/icmp_echo_ignore_all 0
       sysctl -q -w net.ipv4.icmp_echo_ignore_all=0 2>/dev/null || true
       sysctl -e -q -w net.ipv6.icmp.echo_ignore_all=0 2>/dev/null || true
       ok "$(T "Сервер отвечает на ping" "The server answers ping")"
@@ -677,6 +694,11 @@ Unattended-Upgrade::Remove-Unused-Kernel-Packages "true";
 Unattended-Upgrade::Automatic-Reboot "$([[ $AUTO_REBOOT == yes ]] && echo true || echo false)";
 Unattended-Upgrade::Automatic-Reboot-WithUsers "true";
 Unattended-Upgrade::Automatic-Reboot-Time "${REBOOT_TIME:-04:00}";
+// This script edits a few package config files (login.defs, UFW's sysctl.conf, motd-news).
+// Without these options unattended-upgrades holds back any package whose new version
+// changes such a file, security fixes included. With them the local file is kept and the
+// upgrade goes through.
+Dpkg::Options { "--force-confdef"; "--force-confold"; };
 EOF
   mkdir -p /etc/needrestart/conf.d
   echo "\$nrconf{restart} = 'a';" >/etc/needrestart/conf.d/99-hardening.conf
@@ -691,6 +713,10 @@ setup_firewall() {
   ufw default deny incoming
   ufw default allow outgoing
   ufw default deny routed
+  # UFW re-applies its own sysctl file on every start, after sysctl.d — keep the keys it
+  # also sets in line with ours, or it quietly turns them back (it ships log_martians=0)
+  ufw_sysctl_set net/ipv4/conf/all/log_martians 1
+  ufw_sysctl_set net/ipv4/conf/default/log_martians 1
   local p
   # The new port is never added as a plain allow: UFW stops at the first match, and a plain
   # allow before the limit rule would switch rate limiting off (re-run with the same port)
@@ -833,8 +859,8 @@ HOOK_EOF
   chmod 644 /etc/profile.d/99-server-status.sh   # sourced by every user's login shell
 
   # Drop the whole stock greeting (Welcome, ESM, ads, legal) — the summary replaces it.
-  # dpkg-statoverride instead of editing files: the mode survives package upgrades, and
-  # edited conffiles would make unattended-upgrades skip openssh/bash security updates.
+  # dpkg-statoverride instead of chmod or editing: the mode survives package upgrades,
+  # where a plain chmod is undone the next time the package is updated.
   local f real u home
   for f in /etc/update-motd.d/*; do
     [[ -e $f ]] || continue
@@ -1035,16 +1061,65 @@ EOF
   chmod 600 "$SSHD_DROPIN"
 }
 
-restart_sshd() {
+# Stop any sshd daemon still bound to the given ports, other than the unit's own.
+# Seen live: an sshd started through ssh.socket seconds before this step kept port 22
+# through both restarts of ssh.service. The new daemon logged "Bind to port 22 failed:
+# Address already in use", and the old one — still on the original config, passwords
+# and root login allowed — stayed until the reboot, kept out only by the firewall.
+# Sessions are untouched: they are separate processes and hold no listening socket on
+# these ports (their X11 listeners on 127.0.0.1:60xx are not SSH ports and are not asked for).
+kill_sshd_listeners_on() {  # kill_sshd_listeners_on port...
+  local p pid main
+  main=$(systemctl show -p MainPID --value "$(ssh_service)" 2>/dev/null || true)
+  for p in "$@"; do
+    for pid in $(ss -Hltnp "sport = :$p" 2>/dev/null | grep -oE '"sshd",pid=[0-9]+' | grep -oE '[0-9]+$' | sort -u); do
+      [[ $pid == "${main:-0}" ]] && continue
+      kill "$pid" 2>/dev/null \
+        && info "$(T "Остановлен оставшийся sshd (pid $pid) на порту $p" "Stopped a leftover sshd (pid $pid) on port $p")"
+    done
+  done
+  return 0
+}
+
+sshd_listens_on() {  # is the unit's own sshd bound to this port?
+  local main
+  main=$(systemctl show -p MainPID --value "$(ssh_service)" 2>/dev/null || true)
+  [[ -n $main && $main != 0 ]] && ss -Hltnp "sport = :$1" 2>/dev/null | grep -q "\"sshd\",pid=$main,"
+}
+
+# A clean start rather than `systemctl restart`: stop the socket and the service, clear
+# whatever daemon is left on the ports, then start. KillMode=process in ssh.service means
+# the admin's own session survives the stop.
+restart_sshd() {  # restart_sshd port... — the ports the new daemon must end up bound to
+  local p i all
   sshd -t || return 1
-  systemctl restart "$(ssh_service)"
+  systemctl stop ssh.socket &>/dev/null || true
+  systemctl stop "$(ssh_service)" &>/dev/null || true
+  # shellcheck disable=SC2086  # CURRENT_SSH_PORTS is a space-separated list
+  kill_sshd_listeners_on "$@" $CURRENT_SSH_PORTS
+  for i in 1 2 3 4 5 6 7 8 9 10; do   # give the kernel a moment to release the ports
+    ss -Hltn 2>/dev/null | grep -qE ":($(tr ' ' '|' <<<"$*"))[[:space:]]" || break
+    sleep 0.5
+  done
+  systemctl start "$(ssh_service)" || return 1
+  # "Started" is not enough: sshd carries on when it cannot bind one of several ports,
+  # which is exactly how the leftover daemon went unnoticed
+  for i in 1 2 3 4 5 6 7 8 9 10; do
+    all=yes
+    for p in "$@"; do sshd_listens_on "$p" || all=no; done
+    [[ $all == yes ]] && return 0
+    sleep 0.5
+  done
+  warn "$(T "sshd запущен, но слушает не все порты из: $*" "sshd started but is not bound to all of: $*")"
+  return 1
 }
 
 rollback_ssh() {
   warn "$(T "Откат настроек SSH..." "Rolling SSH back...")"
   rm -f "$SSHD_DROPIN"
   cp -a "$BACKUP_DIR/ssh/." /etc/ssh/
-  systemctl restart "$(ssh_service)" || true
+  # shellcheck disable=SC2086
+  restart_sshd $CURRENT_SSH_PORTS || systemctl restart "$(ssh_service)" || true
 }
 
 setup_ssh() {
@@ -1076,8 +1151,8 @@ setup_ssh() {
   [[ " $ports " == *" $SSH_PORT "* ]] || ports="$ports $SSH_PORT"
   write_sshd_config "$ports"
   if ! sshd -t; then rollback_ssh; die "$(T "Конфиг sshd не прошёл проверку — откатил." "sshd config failed the check — rolled back.")"; fi
-  systemctl stop ssh.socket &>/dev/null || true
-  restart_sshd || { rollback_ssh; die "$(T "sshd не перезапустился — откатил." "sshd did not restart — rolled back.")"; }
+  # shellcheck disable=SC2086
+  restart_sshd $ports || { rollback_ssh; die "$(T "sshd не перезапустился — откатил." "sshd did not restart — rolled back.")"; }
   ok "$(T "sshd слушает порты:" "sshd listens on ports:") $ports"
 
   # The admin proves the new login works before anything is closed
@@ -1114,7 +1189,7 @@ setup_ssh() {
 
   # Stage 2: new port only
   write_sshd_config "$SSH_PORT"
-  restart_sshd || { rollback_ssh; die "$(T "Ошибка при финальном перезапуске sshd — откатил." "Final sshd restart failed — rolled back.")"; }
+  restart_sshd "$SSH_PORT" || { rollback_ssh; die "$(T "Ошибка при финальном перезапуске sshd — откатил." "Final sshd restart failed — rolled back.")"; }
   local p
   for p in $CURRENT_SSH_PORTS; do
     [[ $p == "$SSH_PORT" ]] && continue
@@ -1479,6 +1554,16 @@ run_check() {
   else
     v=$(awk '$1=="port"{print $2}' <<<"$cfg" | paste -sd' ' -)
     [[ " $v " == *" 22 "* ]] && chk warn "$(T "Порт 22 (много шума от ботов)" "Port 22 (lots of bot noise)")" || chk pass "$(T "Порт" "Port") $v"
+    # An sshd bound to a port its config does not name is a daemon left over from before
+    # a change, still running the old settings (found live after a port switch)
+    list=""
+    for u in $(ss -Hltnp 2>/dev/null | grep '"sshd"' | awk '{print $4}' | grep -vE '^(127\.|\[::1\])' \
+               | sed -E 's/.*:([0-9]+)$/\1/' | sort -un || true); do
+      [[ " $v " == *" $u "* ]] || list+="$u "
+    done
+    [[ -z $list ]] && chk pass "$(T "sshd слушает только порты из конфигурации" "sshd listens only on configured ports")" \
+      || chk fail "$(T "sshd слушает порт вне конфигурации: ${list}— остался старый процесс (sudo systemctl restart ssh или перезагрузка)" \
+                      "sshd also listens outside its config: ${list}— a leftover daemon (sudo systemctl restart ssh, or reboot)")"
     [[ $(sv permitrootlogin) == no ]] && chk pass "PermitRootLogin no" || chk fail "PermitRootLogin $(sv permitrootlogin)"
     [[ $(sv passwordauthentication) == no ]] && chk pass "PasswordAuthentication no" || chk fail "PasswordAuthentication $(sv passwordauthentication)"
     [[ $(sv kbdinteractiveauthentication) == no ]] && chk pass "KbdInteractiveAuthentication no" || chk fail "KbdInteractiveAuthentication $(sv kbdinteractiveauthentication)"
