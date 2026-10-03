@@ -5,7 +5,7 @@
 **One command turns a fresh Debian or Ubuntu VPS into a server that only lets in your key — and it will not close the old door until you have walked through the new one.**
 
 [![CI](https://github.com/N0deZ3r0/server-hardening/actions/workflows/ci.yml/badge.svg)](https://github.com/N0deZ3r0/server-hardening/actions/workflows/ci.yml)
-![version](https://img.shields.io/badge/version-2026.10.11-3b5bdb)
+![version](https://img.shields.io/badge/version-2026.10.12-3b5bdb)
 ![Debian](https://img.shields.io/badge/Debian-12%20%2F%2013-a80030)
 ![Ubuntu](https://img.shields.io/badge/Ubuntu-22.04%20%2F%2024.04%20%2F%2026.04-e95420)
 ![bash](https://img.shields.io/badge/bash-single%20file-2f9e44)
@@ -24,7 +24,7 @@ summary, can report to Telegram, and finishes with a Lynis audit. Later, `sudo h
 audits the server without changing anything. The interface is in English and Russian.
 
 ```bash
-curl -fsSLo harden.sh https://github.com/N0deZ3r0/server-hardening/releases/download/v2026.10.11/harden.sh && echo "28eb56d259976a11f100d8e0e57ac25879a1e8825f6beb5bcc81713f929e78ad  harden.sh" | sha256sum -c - && sudo bash harden.sh
+curl -fsSLo harden.sh https://github.com/N0deZ3r0/server-hardening/releases/download/v2026.10.12/harden.sh && echo "2fadf6ac8769e03664f5fe27bcb6dc454e183b31a7be5a69c6ecd0d93b7b4870  harden.sh" | sha256sum -c - && sudo bash harden.sh
 ```
 
 The command downloads a fixed release and checks its SHA-256 before running it: if a single
@@ -273,7 +273,7 @@ sudo harden --lang ru                  # change the remembered language (en or r
 ```
 
 To undo a part: SSH settings live in `/etc/ssh/sshd_config.d/00-hardening.conf`, kernel
-settings in `/etc/sysctl.d/99-hardening.conf`, and the originals in
+settings in `/etc/sysctl.d/99-hardening.conf` and `99-protect-links.conf`, and the originals in
 `/root/harden-backup-<date>/`. A locked account comes back with
 `sudo usermod -U -s /bin/bash <name>`.
 
@@ -311,12 +311,13 @@ Knowingly open, with the reason for each:
   other versions are supported by design — version checks, algorithm filtering — not by a
   run on each.
 - **Live runs are on one server** (Ubuntu 24.04, KVM): the full setup from a clean image,
-  Telegram alerts, `--check`. Those runs found eight things CI had missed — a false failure
+  Telegram alerts, `--check`. Those runs found nine things CI had missed — a false failure
   in the audit, key-lookup log lines reported as logins, two alerts per connect from clients
   that open a second connection, `journalctl -f -n 0` dropping lines, files written
   unreadable under the script's own `UMASK 027`, UFW turning ping back on, an sshd left on the
-  old port through the switch, and apport re-enabling dumps of privileged programs at every
-  boot — and each is now replayed in CI. The failure alert is
+  old port through the switch, apport re-enabling dumps of privileged programs at every
+  boot, and the distribution's own sysctl file lowering `fs.protected_fifos` after ours —
+  and each is now replayed in CI. The failure alert is
   verified in CI only, with a unit that really fails, against a stand-in for the Bot API.
 - **Not answering ping is obscurity, not protection.** It takes the server out of ping
   sweeps; a port scan finds it just the same. The practical reason to turn it on is a VPN
@@ -350,7 +351,8 @@ Knowingly open, with the reason for each:
 - **Lynis suggestions left alone:** separate `/home` `/tmp` `/var` partitions (only
   possible at install time), a GRUB password (gets in the way of the provider console),
   AIDE and malware scanners (slow, noisy, false positives), forced password expiry
-  (current NIST guidance advises against it), remote log shipping (needs a second server).
+  (current NIST guidance advises against it), remote log shipping (needs a second server),
+  `kernel.modules_disabled=1` (the firewall and a VPN load their modules later).
   `dccp`, `sctp`, `rds` and `tipc` are disabled with `install … /bin/false`; Lynis only
   recognises `/bin/true`, so it keeps suggesting them.
 

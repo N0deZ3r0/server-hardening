@@ -392,3 +392,57 @@ jobs:
           test "$(stat -c %a /etc/profile.d/99-server-status.sh)" = 644
           test "$(stat -c %a /usr/local/bin/server-status)" = 755
           /usr/local/bin/server-status | grep -E '^ ?(ssh|docker) '
+
+      - name: Kernel settings stay in effect after files that load later
+        # Found by a Lynis run on a live server: the distribution's 99-protect-links.conf
+        # sorts after 99-hardening.conf and put fs.protected_fifos back to 1.
+        run: |
+          ls /usr/lib/sysctl.d/ /etc/sysctl.d/
+          sudo bash -c 'source ./harden.sh; write_sysctl_conf'
+          # Replay the defect first: without the override the packaged file wins, and
+          # --check has to say so.
+          if [ -e /usr/lib/sysctl.d/99-protect-links.conf ]; then
+            sudo mv /etc/sysctl.d/99-protect-links.conf /root/override.saved
+            sudo sysctl --system >/dev/null 2>&1 || true
+            test "$(sysctl -n fs.protected_fifos)" = 1
+            out=$(sudo HARDEN_LANG=en bash harden.sh --check 2>&1) || true
+            line=$(printf '%s\n' "$out" | grep -F 'Differ from recommended' || true)
+            echo "$line"
+            case $line in *fs.protected_fifos*) ;; *) echo "$out"; echo "::error::--check did not notice the overridden value"; exit 1 ;; esac
+            sudo mv /root/override.saved /etc/sysctl.d/99-protect-links.conf
+          fi
+          sudo sysctl --system >/dev/null 2>&1 || true
+          test "$(sysctl -n fs.protected_fifos)" = 2
+          over=$(sudo bash -c 'source ./harden.sh; sysctl_overridden')
+          echo "still overridden: [$over]"
+          case $over in *fs.protected_*) echo "::error::link protection is still overridden"; exit 1 ;; esac
+
+      - name: The machine's own name is added to /etc/hosts once
+        run: |
+          sudo cp /etc/hosts /root/hosts.saved
+          hn=$(hostname)
+          printf '127.0.0.1 localhost' | sudo tee /etc/hosts >/dev/null   # no newline at the end
+          sudo bash -c 'source ./harden.sh; add_hostname_to_hosts; add_hostname_to_hosts' 2>&1
+          cat /etc/hosts
+          test "$(grep -cwF -- "$hn" /etc/hosts)" = 1
+          grep -qx '127.0.0.1 localhost' /etc/hosts
+          grep -qx "127.0.1.1 $hn" /etc/hosts
+          sudo cp /root/hosts.saved /etc/hosts
+
+      - name: fail2ban is told about IPv6 explicitly and still accepts its config
+        run: |
+          sudo apt-get update -q >/dev/null 2>&1 || true
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -q fail2ban >/dev/null
+          sudo rm -f /etc/fail2ban/fail2ban.local
+          out=$(sudo fail2ban-client -d 2>&1) || true
+          echo "warnings before: $(printf '%s\n' "$out" | grep -c "allowipv6' not defined" || true)"
+          sudo bash -c 'source ./harden.sh; fail2ban_set_ipv6'
+          cat /etc/fail2ban/fail2ban.local
+          sudo fail2ban-client -t
+          out=$(sudo fail2ban-client -d 2>&1) || true
+          n=$(printf '%s\n' "$out" | grep -c "allowipv6' not defined" || true)
+          test "$n" = 0 || { echo "::error::the warning is still there"; exit 1; }
+          # An existing fail2ban.local is the admin's and is left alone.
+          echo '# mine' | sudo tee /etc/fail2ban/fail2ban.local >/dev/null
+          sudo bash -c 'source ./harden.sh; fail2ban_set_ipv6'
+          test "$(cat /etc/fail2ban/fail2ban.local)" = '# mine'

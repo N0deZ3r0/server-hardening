@@ -38,7 +38,7 @@ set -Eeuo pipefail
 # explicitly where it is written.
 umask 022
 
-HARDEN_VERSION="2026.10.11"
+HARDEN_VERSION="2026.10.12"
 LOG_FILE="/var/log/harden.log"
 REPORT_FILE="/root/harden-report.txt"
 BACKUP_DIR="/root/harden-backup-$(date +%Y%m%d-%H%M%S)"
@@ -573,10 +573,10 @@ disable_apport() {
 }
 
 # ---------- 4. system ----------
-harden_system() {
-  step "$(T "Ядро и система" "Kernel and system")"
+SYSCTL_CONF=/etc/sysctl.d/99-hardening.conf
 
-  cat >/etc/sysctl.d/99-hardening.conf <<'EOF'
+write_sysctl_conf() {
+  cat >"$SYSCTL_CONF" <<'EOF'
 # --- kernel ---
 kernel.kptr_restrict = 2
 kernel.dmesg_restrict = 1
@@ -621,8 +621,57 @@ dev.tty.ldisc_autoload = 0
 kernel.core_uses_pid = 1
 kernel.ctrl-alt-del = 0
 EOF
+  # Debian and Ubuntu ship /usr/lib/sysctl.d/99-protect-links.conf. It sorts after our
+  # file ("h" < "p") and puts fs.protected_fifos back to 1 — a Lynis run on a live server
+  # showed it. A file of the same name in /etc replaces the packaged one.
+  cat >/etc/sysctl.d/99-protect-links.conf <<'EOF'
+# Written by harden.sh. Replaces /usr/lib/sysctl.d/99-protect-links.conf, which loads
+# after 99-hardening.conf and would lower fs.protected_fifos to 1.
+fs.protected_fifos = 2
+fs.protected_hardlinks = 1
+fs.protected_regular = 2
+fs.protected_symlinks = 1
+EOF
+}
+
+# Keys from our file whose live value is different: something that loads later has set
+# them again. It has happened three times — UFW with ping, apport with suid_dumpable,
+# procps with protected_fifos — so it is checked for every key, not guessed at.
+sysctl_overridden() {
+  local k v cur out=""
+  [[ -r $SYSCTL_CONF ]] || return 0
+  while IFS=$' \t=' read -r k v; do
+    [[ -z $k || $k == \#* ]] && continue
+    case $k in net.core.default_qdisc|net.ipv4.tcp_congestion_control) continue ;; esac  # speed, not security
+    cur=$(sysctl -n "$k" 2>/dev/null) || continue   # this kernel has no such key
+    [[ $cur == "$v" ]] || out+="$k "
+  done <"$SYSCTL_CONF"
+  printf '%s' "$out"
+}
+
+# Some images leave the machine's own name out of /etc/hosts; sudo and mail tools look it
+# up there. 127.0.1.1 is the Debian convention for a host without a fixed address.
+add_hostname_to_hosts() {
+  local hn
+  hn=$(hostname 2>/dev/null || true)
+  [[ -n $hn && -f /etc/hosts ]] || return 0
+  grep -qwF -- "$hn" /etc/hosts && return 0
+  cp -a /etc/hosts "$BACKUP_DIR/hosts" 2>/dev/null || true
+  [[ -z $(tail -c1 /etc/hosts) ]] || echo >>/etc/hosts
+  printf '127.0.1.1 %s\n' "$hn" >>/etc/hosts
+}
+
+harden_system() {
+  step "$(T "Ядро и система" "Kernel and system")"
+
+  write_sysctl_conf
   disable_apport
   sysctl --system >/dev/null 2>&1 || warn "$(T "Часть sysctl не применилась (нормально для контейнеров)" "Some sysctl values were not applied (normal in containers)")"
+  local over
+  over=$(sysctl_overridden)
+  [[ -z $over || $IS_CONTAINER == yes ]] \
+    || warn "$(T "Эти параметры ядра задаёт что-то ещё, они не применились:" "Something else sets these kernel values, they are not in effect:") $over"
+  add_hostname_to_hosts
 
   if [[ $DISABLE_PING == yes ]]; then
     set_ping off
@@ -694,6 +743,7 @@ EOF
 
   chmod 600 /etc/crontab 2>/dev/null || true
   chmod 700 /etc/cron.d /etc/cron.daily /etc/cron.hourly /etc/cron.weekly /etc/cron.monthly 2>/dev/null || true
+  chmod 600 /etc/ssh/sshd_config 2>/dev/null || true
   chmod 750 /home/"$NEW_USER"
 
   ok "$(T "Система усилена" "System hardened")"
@@ -794,8 +844,17 @@ setup_firewall() {
   ok "$(T "UFW включён" "UFW enabled")"
 }
 
+# fail2ban 1.x prints "'allowipv6' not defined" on every command until the option is set
+# explicitly. Older versions have no such option; an existing fail2ban.local is the admin's.
+fail2ban_set_ipv6() {
+  grep -qs 'allowipv6' /etc/fail2ban/fail2ban.conf || return 0
+  [[ ! -e /etc/fail2ban/fail2ban.local ]] || return 0
+  printf '[DEFAULT]\nallowipv6 = auto\n' >/etc/fail2ban/fail2ban.local
+}
+
 setup_fail2ban() {
   step "fail2ban"
+  fail2ban_set_ipv6
   cat >/etc/fail2ban/jail.local <<EOF
 [DEFAULT]
 backend            = systemd
@@ -1684,12 +1743,16 @@ run_check() {
   [[ $(timedatectl show -p NTPSynchronized --value 2>/dev/null) == yes ]] \
     && chk pass "$(T "Время синхронизировано" "Clock synchronised")" || chk warn "$(T "Время не синхронизировано" "Clock not synchronised")"
   list=""
-  for v in kernel.kptr_restrict=2 kernel.dmesg_restrict=1 kernel.randomize_va_space=2 fs.suid_dumpable=0 \
-           fs.protected_symlinks=1 fs.protected_hardlinks=1 net.ipv4.tcp_syncookies=1 \
-           net.ipv4.conf.all.accept_redirects=0 net.ipv4.conf.all.send_redirects=0 \
-           net.ipv4.conf.all.accept_source_route=0 net.ipv4.conf.all.rp_filter=1; do
-    [[ $(sysctl -n "${v%%=*}" 2>/dev/null) == "${v#*=}" ]] || list+="${v%%=*} "
-  done
+  if [[ -r $SYSCTL_CONF ]]; then
+    list=$(sysctl_overridden)   # every value the setup wrote has to be in effect still
+  else
+    for v in kernel.kptr_restrict=2 kernel.dmesg_restrict=1 kernel.randomize_va_space=2 fs.suid_dumpable=0 \
+             fs.protected_symlinks=1 fs.protected_hardlinks=1 net.ipv4.tcp_syncookies=1 \
+             net.ipv4.conf.all.accept_redirects=0 net.ipv4.conf.all.send_redirects=0 \
+             net.ipv4.conf.all.accept_source_route=0 net.ipv4.conf.all.rp_filter=1; do
+      [[ $(sysctl -n "${v%%=*}" 2>/dev/null) == "${v#*=}" ]] || list+="${v%%=*} "
+    done
+  fi
   [[ -z $list ]] && chk pass "$(T "Параметры ядра (sysctl)" "Kernel settings (sysctl)")" || chk warn "$(T "Отличаются от рекомендуемых:" "Differ from recommended:") $list"
 
   echo
