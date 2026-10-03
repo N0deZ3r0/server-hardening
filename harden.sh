@@ -38,7 +38,7 @@ set -Eeuo pipefail
 # explicitly where it is written.
 umask 022
 
-HARDEN_VERSION="2026.10.20"
+HARDEN_VERSION="2026.10.21"
 LOG_FILE="/var/log/harden.log"
 REPORT_FILE="/root/harden-report.txt"
 BACKUP_DIR="/root/harden-backup-$(date +%Y%m%d-%H%M%S)"
@@ -1509,6 +1509,22 @@ restart_sshd() {  # restart_sshd port... — the ports the new daemon must end u
   return 1
 }
 
+# The upgrade keeps a provider-edited sshd_config and saves the packaged one beside it
+# for review; --check then shows a "!" after every clean setup on such an image (three
+# live runs in a row did). SSH settings are decided by our drop-in, which is read first
+# and has just been compared with what sshd really uses, so that copy has nothing left to
+# say. It is moved to the backup, not deleted.
+stash_sshd_config_dist() {
+  local f
+  for f in /etc/ssh/sshd_config.ucf-dist /etc/ssh/sshd_config.dpkg-dist /etc/ssh/sshd_config.dpkg-new; do
+    [[ -f $f ]] || continue
+    mkdir -p "$BACKUP_DIR"
+    mv "$f" "$BACKUP_DIR/" \
+      && info "$(T "Версия sshd_config из пакета, отложенная при обновлении, убрана в бэкап:" "The packaged sshd_config that the upgrade set aside is moved to the backup:") $BACKUP_DIR/${f##*/}"
+  done
+  return 0
+}
+
 rollback_ssh() {
   warn "$(T "Откат настроек SSH..." "Rolling SSH back...")"
   rm -f "$SSHD_DROPIN"
@@ -1612,6 +1628,7 @@ setup_ssh() {
   ufw delete limit OpenSSH >/dev/null 2>&1 || true
   ok "$(T "SSH только на порту $SSH_PORT, только по ключу, root запрещён" "SSH on port $SSH_PORT only, keys only, root denied")"
   [[ -z $closed ]] || ok "$(T "Старый порт закрыт и в sshd, и в firewall:" "The old port is closed, in sshd and in the firewall:") ${closed% }"
+  stash_sshd_config_dist
 }
 
 lock_root() {

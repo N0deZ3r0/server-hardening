@@ -194,6 +194,13 @@ jobs:
           test "$(wc -l < ak.txt)" = 2
           grep -qx 'ssh-ed25519 AAAAold old' ak.txt
           grep -qx 'ssh-ed25519 AAAAnew new' ak.txt
+          # the packaged sshd_config an upgrade set aside goes to the backup, so a clean
+          # setup does not end with a standing "!" in --check
+          sudo touch /etc/ssh/sshd_config.ucf-dist
+          sudo bash -c 'source ./harden.sh; BACKUP_DIR=/root/ci-ssh-dist; stash_sshd_config_dist'
+          sudo test ! -e /etc/ssh/sshd_config.ucf-dist
+          sudo test -e /root/ci-ssh-dist/sshd_config.ucf-dist
+          sudo bash -c 'source ./harden.sh; BACKUP_DIR=/root/ci-ssh-dist; stash_sshd_config_dist'   # nothing there: no error
           # nobody is not an account to hand sudo to
           if bash -c 'source ./harden.sh; valid_user nobody'; then echo "::error::accepted nobody"; exit 1; fi
           bash -c 'source ./harden.sh; valid_user sysop'
