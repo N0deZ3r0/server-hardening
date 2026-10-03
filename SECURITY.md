@@ -4,7 +4,8 @@
 
 ## Supported versions
 
-Fixes go into `main` only — the script is always run from the latest commit.
+Fixes go into `main` and ship in the next release. Only the **latest release** is supported:
+the install command in the README always names it.
 
 ## Reporting a vulnerability
 
@@ -48,7 +49,8 @@ and the hosting provider itself.
 
 ## Поддерживаемые версии
 
-Исправления идут только в `main` — скрипт всегда запускается с последнего коммита.
+Исправления идут в `main` и выходят в следующем релизе. Поддерживается только **последний
+релиз** — его всегда называет команда установки в README.
 
 ## Как сообщить об уязвимости
 

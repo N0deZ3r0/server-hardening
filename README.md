@@ -5,7 +5,7 @@
 **One command turns a fresh Debian or Ubuntu VPS into a server that only lets in your key — and it will not close the old door until you have walked through the new one.**
 
 [![CI](https://github.com/N0deZ3r0/server-hardening/actions/workflows/ci.yml/badge.svg)](https://github.com/N0deZ3r0/server-hardening/actions/workflows/ci.yml)
-![version](https://img.shields.io/badge/version-2026.09-3b5bdb)
+![version](https://img.shields.io/badge/version-2026.10.0-3b5bdb)
 ![Debian](https://img.shields.io/badge/Debian-12%20%2F%2013-a80030)
 ![Ubuntu](https://img.shields.io/badge/Ubuntu-22.04%20%2F%2024.04%20%2F%2026.04-e95420)
 ![bash](https://img.shields.io/badge/bash-single%20file-2f9e44)
@@ -20,11 +20,16 @@ A single bash script, run once as root on a new server. It asks a handful of que
 creates a sudo user with your SSH key, moves SSH to a new port with key-only login and no
 root, turns on a firewall, fail2ban and optionally CrowdSec, hardens the kernel, enables
 security auto-updates and audit logging, replaces the login greeting with a short server
-summary, and finishes with a Lynis audit. The interface is in English and Russian.
+summary, can report to Telegram, and finishes with a Lynis audit. Later, `sudo harden --check`
+audits the server without changing anything. The interface is in English and Russian.
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/N0deZ3r0/server-hardening/main/harden.sh -o harden.sh && sudo bash harden.sh
+curl -fsSLo harden.sh https://github.com/N0deZ3r0/server-hardening/releases/download/v2026.10.0/harden.sh && echo "47d9ae5cbc03e80e34bc15396d6b419e62ffe487d0552b0fb08de3b95e701a7d  harden.sh" | sha256sum -c - && sudo bash harden.sh
 ```
+
+The command downloads a fixed release and checks its SHA-256 before running it: if a single
+byte differs, `sha256sum` stops the chain and nothing is executed. See
+[Releases and verification](#releases-and-verification) for what that does and does not prove.
 
 ## First, honestly, about what this protects
 
@@ -76,6 +81,7 @@ outside, so most of the script is about not making it.
 5. Other ports to open, e.g. `80,443`
 6. Whether to whitelist your current IP
 7. Nightly reboot after kernel updates, locking root, locking other accounts, CrowdSec, Lynis
+8. Telegram alerts — if yes, it walks you through creating the bot
 
 Then a password for the new user — sudo needs it.
 
@@ -92,7 +98,8 @@ Then a password for the new user — sudo needs it.
 | **Updates** | unattended-upgrades for security updates, needrestart, optional nightly reboot |
 | **System** | AppArmor, chrony, persistent size-capped journal, no core dumps, `UMASK 027`, per-user `/tmp` (libpam-tmpdir), ModemManager and udisks2 off, legal pre-login banner |
 | **Login** | The stock Ubuntu greeting (Welcome, ESM, ads, legal) replaced by `server-status` |
-| **Report** | Lynis audit, report in `/root/harden-report.txt`, log in `/var/log/harden.log` |
+| **Alerts** | Optional Telegram messages: every SSH login, a protective service failing, boot, a daily report |
+| **Report** | Lynis audit, report in `/root/harden-report.txt`, log in `/var/log/harden.log`; the script stays as `/usr/local/sbin/harden` for `--check` |
 
 ## The login summary
 
@@ -135,6 +142,70 @@ unattended-upgrades skip security updates for the package that owns it.
 
 On a server hardened by an earlier version: `sudo bash harden.sh --install-status`.
 
+## Telegram alerts
+
+Optional, asked during setup; on a server that is already hardened:
+`sudo harden --setup-telegram`. The script checks the bot token with Telegram, finds your
+chat id once you press Start in the bot, and sends a test message that you confirm before
+anything is installed.
+
+| Alert | When |
+|---|---|
+| 🔑 SSH login | every accepted login — user, IP, key type and fingerprint |
+| ❌ service failed | `ssh`, `fail2ban`, `crowdsec`, its bouncer, `auditd` or `unattended-upgrades` ends in a failed state |
+| 🔄 server started | after every boot, with the running kernel |
+| 📊 daily report | 09:00 server time: pending updates, reboot required, logins and bans in 24 h, failed services, disk and RAM |
+
+A login you did not make is the alert that matters; the rest tells you the server needs
+attention before you happen to log in.
+
+How it is built, and why:
+
+- **Logins are read from the journal** by a small service, so neither PAM nor `sshd_config`
+  is edited — an edited package config would make unattended-upgrades skip that package.
+- **Failure alerts are systemd `OnFailure=` drop-ins** — the script's own files next to the
+  units, removable by deleting them.
+- **The bot token** is stored in `/etc/harden/telegram.conf`, readable by root only, and is
+  handed to curl on stdin. It never appears on a command line, where any local user could
+  read it from `ps`, and it is not written into any script or unit. CI checks both.
+- Individual fail2ban bans are **not** sent: a public server collects dozens a day. They are
+  counted in the daily report.
+
+To turn it off: `sudo systemctl disable --now harden-login-watch harden-daily-report.timer
+harden-boot-alert && sudo rm /etc/harden/telegram.conf`.
+
+## Checking a server
+
+```bash
+sudo harden --check          # or: sudo bash harden.sh --check
+```
+
+Changes nothing. It reads the effective SSH configuration (`sshd -T`), accounts and sudo
+rules, firewall, fail2ban and CrowdSec, auditd, AppArmor, updates, clock and kernel settings,
+and prints one line each. An illustration of the format:
+
+```
+SSH
+  ✓ Port 10022
+  ✓ PermitRootLogin no
+  ✓ PasswordAuthentication no
+  ✓ Post-quantum key exchange
+  ✓ No weak algorithms
+Accounts
+  ✓ root password locked
+  ! Passwordless sudo (NOPASSWD): deploy
+Network and protection
+  ✓ UFW on, incoming denied
+  ✓ Ports listening publicly: 80 443 10022
+  ✗ fail2ban does not protect SSH
+...
+Summary: ✓ 21  ! 2  ✗ 1
+```
+
+`✗` is something that lets people in or leaves holes unpatched; `!` is worth a look. The exit
+code is 1 when there is any `✗`, so it can run from cron or monitoring. It works on servers
+this script never touched — that is the point: a quick answer to "what state is this box in".
+
 ## Unattended run
 
 Every question can be answered in advance. The login check on the new port is still asked
@@ -157,6 +228,8 @@ sudo HARDEN_LANG=en NEW_USER=sysop SSH_PORT=42222 GITHUB_KEYS_USER=yourname \
 | `LOCK_ROOT`, `LOCK_OTHER_USERS` | lock the root password / provider accounts |
 | `INSTALL_CROWDSEC`, `RUN_LYNIS`, `REBOOT_NOW`, `SERVER_STATUS` | `yes` / `no` |
 | `REUSE_USER` | `yes` to use an account that already exists (asked otherwise) |
+| `TELEGRAM`, `TG_CHAT_ID`, `TG_REPORT_TIME` | `yes` / `no`, the chat to write to, time of the daily report (`09:00`) |
+| `TG_TOKEN` | the bot token; not carried into tmux (it would show in `ps`), so it is asked for there with hidden input |
 | `SET_USER_PASSWORD=no` | skip the sudo password now; root then stays unlocked |
 
 ## Compatibility
@@ -185,12 +258,40 @@ sudo cscli decisions list              # CrowdSec bans
 sudo ausearch -k identity -i           # who changed accounts
 sudo lynis audit system                # full audit
 server-status                          # summary
+sudo harden --check                    # audit, nothing is changed
+sudo harden --setup-telegram           # add Telegram alerts
 ```
 
 To undo a part: SSH settings live in `/etc/ssh/sshd_config.d/00-hardening.conf`, kernel
 settings in `/etc/sysctl.d/99-hardening.conf`, and the originals in
 `/root/harden-backup-<date>/`. A locked account comes back with
 `sudo usermod -U -s /bin/bash <name>`.
+
+## Releases and verification
+
+A script that runs as root deserves to be the one you meant to run. Each version is
+published as a [release](https://github.com/N0deZ3r0/server-hardening/releases) with
+`harden.sh`, `SHA256SUMS` and a signed provenance attestation, and the install command above
+names one release and one checksum.
+
+**What the checksum proves:** the file you downloaded is byte for byte the file that was
+released — not truncated, not altered on the way, and not whatever happens to be on `main`
+today. A release is published only if the tag, the version inside the script and the
+checksum in this README all agree, and only from a commit on `main` that passed the checks.
+
+**What it does not prove:** that the release itself is honest. The checksum sits in the same
+repository as the script, so someone who took over the GitHub account could change both.
+Two things narrow that:
+
+- **Provenance.** With the GitHub CLI, `gh attestation verify harden.sh --repo
+  N0deZ3r0/server-hardening` shows which commit and which workflow produced the file, signed
+  through Sigstore — a file built anywhere else does not verify.
+- **Your own copy of the checksum.** Read the script once, note the checksum of the version
+  you read, and keep using that exact command. It will keep installing what you reviewed.
+
+The newest unreleased code is on `main` —
+`curl -fsSL https://raw.githubusercontent.com/N0deZ3r0/server-hardening/main/harden.sh -o harden.sh`
+— with no checksum to compare against; use it for development, not for servers.
 
 ## Limits
 
@@ -199,6 +300,11 @@ Knowingly open, with the reason for each:
 - **Live-tested on one system.** Ubuntu 24.04 on KVM ran end to end several times; the
   other versions are supported by design — version checks, algorithm filtering — not by a
   run on each.
+- **Telegram alerts and `--check` are tested in CI, not yet on a production server:** the
+  real functions on a real Ubuntu 24.04 runner, against a stand-in for the Bot API.
+- **Telegram sees your alerts.** Messages carry the hostname and the IP addresses of
+  logins and pass through Telegram's servers. Anyone with root on the server can read the
+  bot token and write to that chat as the bot — use a bot made for this server only.
 - **Docker bypasses UFW.** Published container ports are reachable whatever UFW says.
   Publish as `-p 127.0.0.1:8080:80`, or use `ufw-docker`.
 - **No port forwarding over SSH**, which also breaks VS Code Remote-SSH. Set

@@ -1,0 +1,81 @@
+name: Release
+
+# Pushing a tag vYYYY.MM.N publishes harden.sh with its checksum and a signed record of
+# which commit and workflow produced it. Prepare the tag with tools/prepare-release.sh.
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write        # create the release
+  id-token: write        # sign the provenance attestation
+  attestations: write
+
+jobs:
+  release:
+    name: Publish harden.sh
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      # First-party actions only, as in CI.
+      - uses: actions/checkout@v5
+
+      - name: The tag matches the version inside the script
+        run: |
+          v=$(sed -n 's/^HARDEN_VERSION="\(.*\)"$/\1/p' harden.sh)
+          echo "script: $v, tag: $GITHUB_REF_NAME"
+          test "v$v" = "$GITHUB_REF_NAME"
+
+      - name: The tagged commit is on main
+        # A tag pushed from some other branch must not become a release.
+        run: |
+          git fetch --no-tags --depth=50 origin main
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main
+
+      - name: Syntax and ShellCheck
+        run: |
+          if grep -l $'\r' harden.sh; then echo "::error::CRLF line endings"; exit 1; fi
+          bash -n harden.sh
+          shellcheck -S warning harden.sh
+
+      - name: Checksum, and the README shows the same one
+        # The install command in both READMEs carries the checksum. If it does not match
+        # the file being released, the command people copy would refuse to run.
+        run: |
+          sha256sum harden.sh | tee SHA256SUMS
+          sum=$(cut -d' ' -f1 SHA256SUMS)
+          for f in README.md README.ru.md; do
+            grep -q "$sum" "$f" || { echo "::error file=$f::checksum $sum not found"; exit 1; }
+            grep -q "releases/download/$GITHUB_REF_NAME/harden.sh" "$f" || { echo "::error file=$f::install URL is not for $GITHUB_REF_NAME"; exit 1; }
+          done
+          echo "SUM=$sum" >> "$GITHUB_ENV"
+
+      - name: Provenance attestation
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: harden.sh
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cat > notes.md <<EOF
+          \`\`\`
+          $SUM  harden.sh
+          \`\`\`
+
+          Install — the checksum is verified before anything runs:
+
+          \`\`\`bash
+          curl -fsSLo harden.sh https://github.com/$GITHUB_REPOSITORY/releases/download/$GITHUB_REF_NAME/harden.sh && echo "$SUM  harden.sh" | sha256sum -c - && sudo bash harden.sh
+          \`\`\`
+
+          Built from $GITHUB_SHA. With the GitHub CLI the provenance can be checked too:
+
+          \`\`\`bash
+          gh attestation verify harden.sh --repo $GITHUB_REPOSITORY
+          \`\`\`
+          EOF
+          gh release create "$GITHUB_REF_NAME" harden.sh SHA256SUMS \
+            --title "$GITHUB_REF_NAME" --notes-file notes.md --verify-tag

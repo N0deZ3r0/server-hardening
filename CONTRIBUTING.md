@@ -29,7 +29,7 @@ bash -n harden.sh
 shellcheck -S warning harden.sh
 ```
 
-CI runs the same, plus the embedded `server-status` script. Then, on a throwaway server:
+CI runs the same, plus the embedded scripts, `--check` and the alerts. Then, on a throwaway server:
 
 1. Reinstall the OS, wait for the provider's cloud-init
 2. Run the script end to end, including the login check from a second window
@@ -41,6 +41,19 @@ CI runs the same, plus the embedded `server-status` script. Then, on a throwaway
 - One file. `curl … && sudo bash harden.sh` must keep working without anything else.
 - Every user-facing string goes through `T "русский" "english"`.
 - Comments say *why*, especially where the obvious approach was tried and failed.
+
+## Releasing
+
+```bash
+tools/prepare-release.sh 2026.10.0     # version into harden.sh, URL and checksum into both READMEs
+git commit -am "Release v2026.10.0"
+git push origin main                   # wait for CI to pass
+git tag v2026.10.0 && git push origin v2026.10.0
+```
+
+The Release workflow publishes only if the tag, the version inside the script and the
+checksum in both READMEs agree, and the tagged commit is on `main`. A published release is
+not edited: a mistake gets the next version number.
 
 ---
 
@@ -74,7 +87,7 @@ bash -n harden.sh
 shellcheck -S warning harden.sh
 ```
 
-CI делает то же самое плюс проверяет встроенный скрипт `server-status`. Затем на
+CI делает то же самое, проверяет встроенные скрипты, `--check` и уведомления. Затем на
 одноразовом сервере:
 
 1. Переустановите ОС, дождитесь cloud-init хостера
@@ -88,3 +101,16 @@ CI делает то же самое плюс проверяет встроен�
 - Каждая строка для пользователя проходит через `T "русский" "english"`.
 - Комментарии объясняют *почему* — особенно там, где очевидный способ был опробован и
   не сработал.
+
+## Выпуск версии
+
+```bash
+tools/prepare-release.sh 2026.10.0     # версия в harden.sh, URL и контрольная сумма в оба README
+git commit -am "Release v2026.10.0"
+git push origin main                   # дождаться зелёного CI
+git tag v2026.10.0 && git push origin v2026.10.0
+```
+
+Workflow Release публикует версию, только если тег, версия внутри скрипта и контрольная
+сумма в обоих README совпадают, а коммит с тегом лежит в `main`. Опубликованный релиз не
+правится: ошибка исправляется следующим номером версии.

@@ -3,7 +3,7 @@
 #  harden.sh — first-boot setup and hardening for a Debian / Ubuntu server
 #
 #  Supported: Debian 12/13, Ubuntu 22.04/24.04/26.04
-#  Run:       curl -fsSL https://raw.githubusercontent.com/N0deZ3r0/server-hardening/main/harden.sh -o harden.sh && sudo bash harden.sh
+#  Run:       see README.md — the release command verifies the checksum before running
 #  Interface: English / Русский (asked at start, or HARDEN_LANG=en|ru)
 #
 #  Order of work:
@@ -30,7 +30,7 @@
 # =============================================================================
 set -Eeuo pipefail
 
-HARDEN_VERSION="2026.09"
+HARDEN_VERSION="2026.10.0"
 LOG_FILE="/var/log/harden.log"
 REPORT_FILE="/root/harden-report.txt"
 BACKUP_DIR="/root/harden-backup-$(date +%Y%m%d-%H%M%S)"
@@ -1441,7 +1441,10 @@ run_check() {
 }
 
 main() {
-  case ${1:-} in -h|--help) usage; exit 0 ;; esac
+  case ${1:-} in
+    -h|--help) usage; exit 0 ;;
+    -V|--version) echo "harden.sh $HARDEN_VERSION"; exit 0 ;;
+  esac
   [[ $EUID -eq 0 ]] || die "Run as root: sudo bash harden.sh / Запусти от root: sudo bash harden.sh"
   choose_language
   case ${1:-} in
