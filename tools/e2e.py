@@ -304,7 +304,7 @@ def answers_and_refresh(password, pub):
     if r.returncode != 0 or "Settings refreshed" not in r.stdout:
         print(r.stdout)
         fail("the second --refresh did not finish")
-    r = ssh(NEW, "alex", sudo(password, "harden --answers") + "; echo ping=$(sysctl -n net.ipv4.icmp_echo_ignore_all); "
+    r = ssh(NEW, "alex", sudo(password, "harden --answers") + "; echo ping=$(cat /proc/sys/net/ipv4/icmp_echo_ignore_all); "
                          "ls /usr/local/bin/server-status /etc/profile.d/99-server-status.sh 2>&1", check=False)
     print(r.stdout)
     if "DISABLE_PING='no'" not in r.stdout or "ping=0" not in r.stdout:
