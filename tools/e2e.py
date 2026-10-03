@@ -275,7 +275,13 @@ def verify_undone():
         fail("after --undo nothing answers on the old port")
     if banner(NEW).startswith(b"SSH-"):
         fail("after --undo sshd still listens on the new port")
-    if ssh(OLD, "root", "id -un").stdout.strip() != "root":
+    r = ssh(OLD, "root", "id -un", check=False)
+    if r.stdout.strip() != "root":
+        print("root:", r.returncode, r.stderr)
+        d = ssh(OLD, "provider", "sudo -n journalctl -u ssh -n 25 --no-pager -o cat; sudo -n passwd -S root; "
+                                 "sudo -n ls -la /root/.ssh; sudo -n sshd -T | grep -i -E 'permitroot|allowusers'",
+                check=False)
+        print(d.stdout, d.stderr)
         fail("after --undo root cannot log in with its key, as it could before the setup")
     if ssh(OLD, "provider", "sudo -n id -un").stdout.strip() != "root":
         fail("after --undo the provider's account does not have its sudo back")
@@ -313,8 +319,10 @@ def main():
 
     # What the machine looks like afterwards is printed from the same session: if the undo
     # leaves no way in, this is the only place it can be seen from.
-    drive(NEW, "alex", "sudo harden --undo; echo '--- after the undo'; sudo -n ufw status verbose 2>&1 | head -12; "
-                       "sudo -n ss -Hltnp 2>&1 | grep sshd | grep -v 127.0.0.1 | grep -v '::1'",
+    drive(NEW, "alex", "sudo harden --undo; echo '--- after the undo'; sudo -n ufw status 2>&1 | head -3; "
+                       "sudo -n ss -Hltnp 2>&1 | grep sshd | grep -v 127.0.0.1 | grep -v '::1'; "
+                       "sudo -n systemctl is-active fail2ban; sudo -n passwd -S root; sudo -n ls -la /root/.ssh; "
+                       "sudo -n iptables -S 2>&1 | grep -ciE 'f2b|reject|drop'; sudo -n nft list ruleset 2>&1 | grep -ci f2b",
           password, "undo", finish=r"The setup is undone", login_check=False)
     verify_undone()
 

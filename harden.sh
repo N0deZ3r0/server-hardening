@@ -2399,7 +2399,17 @@ run_undo() {
   sysctl --system >/dev/null 2>&1 || true
   systemctl restart systemd-journald || true
   if command -v augenrules >/dev/null; then augenrules --load >/dev/null 2>&1 || true; fi
-  systemctl restart fail2ban &>/dev/null || true
+  # fail2ban: with the setup's jail gone it would go on with the distribution's defaults
+  # and no exception for the admin's address — and it reads the recent log when it starts,
+  # so a few mistyped logins from before are enough for a ban on the port just restored.
+  # It is left running only if it had a configuration of its own before the setup.
+  if [[ -f /etc/fail2ban/jail.local ]]; then
+    systemctl restart fail2ban &>/dev/null || true
+  elif systemctl cat fail2ban.service &>/dev/null; then
+    systemctl disable --now fail2ban &>/dev/null || true
+    T "  fail2ban остановлен: без настроек скрипта он работал бы без исключения для твоего адреса. Включить: sudo systemctl enable --now fail2ban" \
+      "  fail2ban is stopped: without the setup's jail it would run with no exception for your address. To start it: sudo systemctl enable --now fail2ban"; echo
+  fi
 
   echo
   ok "$(T "Настройка откачена." "The setup is undone.")"
