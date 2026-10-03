@@ -88,7 +88,7 @@ jobs:
         run: |
           set -x
           # Whatever happens, show what the stand-in received and what the watcher logged
-          trap 'set +x; echo "--- tg.log"; cat tg.log 2>/dev/null; echo "--- watcher"; sudo journalctl -u harden-login-watch --no-pager -n 20 2>/dev/null' EXIT
+          trap 'set +x; echo "--- tg.log"; cat tg.log 2>/dev/null; echo "--- watcher"; sudo systemctl status harden-login-watch --no-pager -l 2>/dev/null | tail -20; sudo journalctl -u harden-login-watch --no-pager -n 20 2>/dev/null' EXIT
           cat > fake_tg.py <<'EOF'
           import http.server, json, urllib.parse
           class H(http.server.BaseHTTPRequestHandler):
@@ -120,6 +120,9 @@ jobs:
           grep -qF '"chat_id": ["42"]' tg.log
           sudo /usr/local/sbin/harden-notify "ci hello"
           grep -qF ': ci hello' tg.log
+          # The merged-login mark must survive the bare environment a systemd unit runs in
+          sudo env -i /usr/local/sbin/harden-notify "probe ×2"
+          grep -F 'probe ×2' tg.log
           # Every SSH login is reported, read from the journal — and only logins. The first
           # line is what sshd adds per key lookup under LogLevel VERBOSE; on a live server it
           # was reported as a login "from at", so it is replayed here exactly.
