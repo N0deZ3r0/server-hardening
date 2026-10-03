@@ -28,7 +28,8 @@
 #    SET_USER_PASSWORD=no (root is then NOT locked)
 #
 #  Other modes: --check (audit only), --setup-telegram, --ping off|on, --lang en|ru,
-#               --install-status, --help. The language chosen at setup is remembered.
+#               --install-status, --refresh, --answers, --undo, --help.
+#               The language and the answers of the setup are remembered in /etc/harden.
 # =============================================================================
 set -Eeuo pipefail
 # Files this script writes get ordinary modes whatever umask the caller has. This script
@@ -134,6 +135,11 @@ harden.sh — Debian/Ubuntu server hardening
   sudo bash harden.sh --ping off|on     stop / resume answering ping
   sudo bash harden.sh --lang en|ru      change the remembered interface language
   sudo bash harden.sh --install-status  only install the login summary (server-status)
+  sudo bash harden.sh --refresh         apply this version's settings to a server that is
+                                        already set up: no questions; accounts, SSH and the
+                                        firewall are left as they are
+  sudo bash harden.sh --answers         print the command that repeats the last setup
+  sudo bash harden.sh --undo            take the setup back, from the backup made before it
   sudo HARDEN_LANG=ru bash harden.sh    interface in Russian / интерфейс на русском
 
 After a full run the script is also installed as /usr/local/sbin/harden,
@@ -222,6 +228,23 @@ current_ssh_ports() {
   echo "${ports:-22}"
 }
 
+# Every file this script replaces or edits in place is copied first, so that "the
+# originals are in the backup" holds for each of them (jail.local and hosts are copied
+# where they are handled). --undo restores from the oldest of these directories.
+backup_originals() {
+  local bf
+  mkdir -p "$BACKUP_DIR"
+  if [[ -d /etc/ssh ]]; then cp -a /etc/ssh "$BACKUP_DIR/ssh"; fi
+  for bf in /etc/login.defs /etc/issue /etc/issue.net /etc/apt/apt.conf.d/20auto-upgrades \
+            /etc/default/apport /etc/default/sysstat /etc/default/motd-news; do
+    # mkdir + cp, not `cp --parents`: that fails with "No such file or directory" in
+    # coreutils 9.1, which is what Debian 12 has — the setup stopped right here on it
+    # (found by the first run in a Debian 12 VM)
+    if [[ -e $bf ]]; then mkdir -p "$BACKUP_DIR${bf%/*}"; cp -a "$bf" "$BACKUP_DIR$bf"; fi
+  done
+  if [[ -d /etc/ufw ]]; then cp -a /etc/ufw "$BACKUP_DIR/ufw"; fi
+}
+
 preflight() {
   have_tty || die "$(T "Нужен интерактивный терминал (запускай в SSH-сессии)." "An interactive terminal is required (run it in an SSH session).")"
   . /etc/os-release
@@ -234,17 +257,7 @@ preflight() {
   IS_CONTAINER=no
   systemd-detect-virt -cq 2>/dev/null && IS_CONTAINER=yes
 
-  mkdir -p "$BACKUP_DIR"
-  if [[ -d /etc/ssh ]]; then cp -a /etc/ssh "$BACKUP_DIR/ssh"; fi
-  # The other files this script replaces or edits in place, so that "the originals are
-  # in the backup" holds for each of them (jail.local and hosts are copied where they
-  # are handled)
-  local bf
-  for bf in /etc/login.defs /etc/issue /etc/issue.net /etc/apt/apt.conf.d/20auto-upgrades \
-            /etc/default/apport /etc/default/sysstat /etc/default/motd-news; do
-    if [[ -e $bf ]]; then cp -a --parents "$bf" "$BACKUP_DIR/"; fi
-  done
-  [[ -d /etc/ufw ]] && cp -a /etc/ufw "$BACKUP_DIR/ufw"
+  backup_originals
   # The log names the user, the SSH port and the whitelisted address: root only
   touch "$LOG_FILE"; chmod 600 "$LOG_FILE"
   exec > >(tee -a "$LOG_FILE") 2>&1
@@ -580,13 +593,23 @@ EOF
     USER_HAS_PASSWORD=yes
   fi
 
-  # Log every sudo command, shorter credential cache
-  cat >/etc/sudoers.d/99-hardening <<'EOF'
-Defaults    use_pty
-Defaults    logfile="/var/log/sudo.log"
-Defaults    timestamp_timeout=15
-Defaults    passwd_tries=3
-EOF
+  # Log every sudo command, shorter credential cache. One setting at a time, each tried
+  # on its own first: sudo-rs, which is sudo on Ubuntu 25.10 and later, does not know every
+  # setting the classic sudo has (`logfile`, for one; it logs to the journal instead), and
+  # a single unknown line makes the whole file invalid — the setup stopped on that on
+  # Ubuntu 26.04 (found by the first run in a VM).
+  local d probe
+  probe=$(mktemp)
+  : >/etc/sudoers.d/99-hardening
+  for d in 'use_pty' 'logfile="/var/log/sudo.log"' 'timestamp_timeout=15' 'passwd_tries=3'; do
+    echo "Defaults    $d" >"$probe"
+    if visudo -cqf "$probe" &>/dev/null; then
+      echo "Defaults    $d" >>/etc/sudoers.d/99-hardening
+    else
+      info "$(T "sudo на этой системе не знает настройку, пропускаю:" "sudo on this system does not know the setting, skipped:") $d"
+    fi
+  done
+  rm -f "$probe"
   chmod 440 /etc/sudoers.d/99-hardening
   visudo -cq || { rm -f /etc/sudoers.d/99-hardening; die "$(T "Ошибка sudoers" "sudoers error")"; }
   # The sudo log would otherwise grow for ever
@@ -607,6 +630,10 @@ lock_other_users() {
   step "$(T "Блокировка лишних аккаунтов:" "Locking extra accounts:") $OTHER_USERS"
   local u f g
   for u in $OTHER_USERS; do
+    # the shell and the groups taken away, for --undo
+    printf '%s\t%s\t%s\n' "$u" "$(getent passwd "$u" | cut -d: -f7)" \
+      "$(id -nG "$u" 2>/dev/null | tr ' ' '\n' | grep -xE 'sudo|adm|lxd|docker' | paste -sd' ' - || true)" \
+      >>"$BACKUP_DIR/locked-users.tsv"
     usermod -L -s /usr/sbin/nologin "$u"
     for g in sudo adm lxd docker; do gpasswd -d "$u" "$g" &>/dev/null || true; done
     f=$(home_of "$u")
@@ -1689,6 +1716,13 @@ final_report() {
   echo "  server-status                     — $(T "сводка о сервере" "server summary")"
   echo "  sudo harden --check               — $(T "проверить защиту сервера" "audit the server")"
   [[ ${TELEGRAM:-no} == yes ]] || echo "  sudo harden --setup-telegram      — $(T "подключить уведомления" "add Telegram alerts")"
+  echo "  sudo harden --refresh             — $(T "применить настройки новой версии скрипта, без вопросов" "apply a newer version's settings, no questions")"
+  echo "  sudo harden --undo                — $(T "откатить настройку из резервной копии" "take the setup back from the backup")"
+  echo
+  T "Чтобы настроить сервер так же ещё раз (после переустановки, например), сохрани у себя эту команду:" \
+    "To set a server up the same way again (after a reinstall, say), keep this command:"; echo
+  echo "  $(print_answers)"
+  echo
   warn "$(T "Docker публикует порты в обход UFW! Используй -p 127.0.0.1:PORT:PORT или ufw-docker." \
             "Docker publishes ports around UFW! Use -p 127.0.0.1:PORT:PORT or ufw-docker.")"
   # On a VPS nobody misses USB storage; on a physical server a backup disk may depend on it
@@ -2133,6 +2167,239 @@ run_check() {
   (( CHK_FAIL == 0 ))
 }
 
+# ---------- saved answers: --answers, --refresh, --undo ----------
+# The answers of the last setup. --refresh re-applies settings from them without asking,
+# --answers prints the command that repeats the setup. No secret is kept here: the bot
+# token stays in telegram.conf, and the password is not stored anywhere.
+STATE_FILE=/etc/harden/setup.conf
+ANSWER_VARS="NEW_USER SSH_PORT SSH_PUBKEY EXTRA_PORTS ADMIN_IP AUTO_REBOOT REBOOT_TIME LOCK_ROOT LOCK_OTHER_USERS SSH_EXTRA_USERS INSTALL_CROWDSEC RUN_LYNIS TELEGRAM TG_REPORT_TIME DISABLE_PING SERVER_STATUS"
+
+save_answers() {
+  local v
+  install -d -m 700 /etc/harden
+  {
+    echo "# Answers of the last setup — harden.sh $HARDEN_VERSION, $(date -Is)."
+    echo "# Read by: sudo harden --refresh, sudo harden --answers."
+    for v in $ANSWER_VARS; do printf '%s=%q\n' "$v" "${!v:-}"; done
+  } >"$STATE_FILE"
+  chmod 600 "$STATE_FILE"
+}
+
+shq() { printf "'%s'" "${1//\'/\'\\\'\'}"; }   # 'a value', safe to paste into a shell
+
+# The command that repeats the setup with the same answers. What is still asked then: the
+# password for the new user, the bot token, and the login check — on purpose.
+print_answers() {
+  local v line="sudo HARDEN_LANG=$UI"
+  for v in NEW_USER SSH_PORT SSH_PUBKEY EXTRA_PORTS ADMIN_IP AUTO_REBOOT REBOOT_TIME LOCK_ROOT LOCK_OTHER_USERS \
+           INSTALL_CROWDSEC RUN_LYNIS TELEGRAM DISABLE_PING; do
+    [[ $v == REBOOT_TIME && ${AUTO_REBOOT:-no} != yes ]] && continue
+    line+=" $v=$(shq "${!v:-}")"
+  done
+  echo "$line bash harden.sh"
+}
+
+# A server set up before the answers were saved: read them back from what the setup left.
+derive_answers() {
+  local h v
+  NEW_USER=$(awk '$1=="AllowUsers"{print $2; exit}' "$SSHD_DROPIN" 2>/dev/null || true)
+  SSH_EXTRA_USERS=$(awk '$1=="AllowUsers"{$1=$2=""; sub(/^ +/,""); print; exit}' "$SSHD_DROPIN" 2>/dev/null || true)
+  SSH_PORT=$(awk '$1=="Port"{p=$2} END{print p}' "$SSHD_DROPIN" 2>/dev/null || true)
+  ADMIN_IP=$(awk '$1=="ignoreip"{print $5; exit}' "$F2B_JAIL" /etc/fail2ban/jail.local 2>/dev/null || true)
+  AUTO_REBOOT=no; REBOOT_TIME=04:00
+  if grep -qs 'Automatic-Reboot "true"' /etc/apt/apt.conf.d/52-hardening-unattended; then AUTO_REBOOT=yes; fi
+  v=$(sed -n 's/.*Automatic-Reboot-Time "\(.*\)";.*/\1/p' /etc/apt/apt.conf.d/52-hardening-unattended 2>/dev/null || true)
+  [[ -z $v ]] || REBOOT_TIME=$v
+  DISABLE_PING=no; [[ -e $PING_SYSCTL ]] && DISABLE_PING=yes
+  SERVER_STATUS=no; [[ -x /usr/local/bin/server-status ]] && SERVER_STATUS=yes
+  LOCK_ROOT=no; [[ $(passwd -S root 2>/dev/null | awk '{print $2}') == L ]] && LOCK_ROOT=yes
+  LOCK_OTHER_USERS=yes
+  INSTALL_CROWDSEC=no; systemctl cat crowdsec.service &>/dev/null && INSTALL_CROWDSEC=yes
+  RUN_LYNIS=yes
+  TELEGRAM=no; [[ -s /etc/harden/telegram.conf ]] && TELEGRAM=yes
+  TG_REPORT_TIME=$(sed -n 's/^OnCalendar=\*-\*-\* //p' /etc/systemd/system/harden-daily-report.timer 2>/dev/null || true)
+  EXTRA_PORTS=""
+  h=$(home_of "${NEW_USER:-root}")
+  SSH_PUBKEY=$(cat "$h/.ssh/authorized_keys" 2>/dev/null || true)
+  return 0
+}
+
+load_answers() {
+  [[ -f $SSHD_DROPIN ]] || die "$(T "Этот сервер не настраивался через harden.sh — сначала полная настройка: sudo bash harden.sh" \
+                                    "This server was not set up by harden.sh — run the full setup first: sudo bash harden.sh")"
+  if [[ -r $STATE_FILE ]]; then
+    # shellcheck disable=SC1090  # written by save_answers, root-only
+    . "$STATE_FILE"
+  else
+    derive_answers
+  fi
+  [[ -n ${NEW_USER:-} && -n ${SSH_PORT:-} ]] \
+    || die "$(T "Не удалось прочитать текущую настройку (пользователь, порт SSH)" "Could not read the current setup (user, SSH port)")"
+}
+
+# Apply this version's settings to a server that is already set up, without questions.
+# Accounts, SSH and the firewall are left as they are: those are the parts where a mistake
+# costs access, and they change only in the full setup, with its login check.
+run_refresh() {
+  local api
+  load_answers
+  VIRT=$(systemd-detect-virt 2>/dev/null || echo none)
+  IS_CONTAINER=no
+  systemd-detect-virt -cq 2>/dev/null && IS_CONTAINER=yes
+  step "$(T "Обновление настроек до версии" "Refreshing the settings to version") $HARDEN_VERSION"
+  T "  Аккаунты, SSH и firewall не трогаются — их меняет только полная настройка." \
+    "  Accounts, SSH and the firewall are not touched — only the full setup changes those."; echo
+  backup_originals
+  harden_system
+  install_server_status
+  setup_auditd
+  setup_autoupdates
+  setup_fail2ban
+  stash_sshd_config_dist
+  if [[ -s /etc/harden/telegram.conf ]]; then
+    TELEGRAM=yes
+    TG_TOKEN=$(sed -n 's/^TG_TOKEN=//p' /etc/harden/telegram.conf)
+    TG_CHAT_ID=$(sed -n 's/^TG_CHAT_ID=//p' /etc/harden/telegram.conf)
+    api=$(sed -n 's/^TG_API=//p' /etc/harden/telegram.conf)
+    [[ -z $api ]] || HARDEN_TG_API=$api
+    install_notifications
+  fi
+  install_self "$0"
+  save_answers
+  ok "$(T "Настройки обновлены. Проверка: sudo harden --check" "Settings refreshed. To check: sudo harden --check")"
+}
+
+# Take the setup back. The originals are in the oldest backup directory — the one made
+# before the first setup. What comes back: SSH (port, logins), the firewall, root and the
+# locked accounts, and the system files the setup replaced; every file it added is
+# removed. What stays: the installed packages, and the user the setup created.
+run_undo() {
+  local -a dirs=(/root/harden-backup-*)
+  local first=${dirs[0]} b f u shell groups g real was now
+  [[ -d $first/ssh ]] || die "$(T "Нет резервной копии /root/harden-backup-* с настройками SSH — откатывать не из чего" \
+                                  "No backup /root/harden-backup-* with the SSH settings — nothing to undo from")"
+  have_tty || die "$(T "Нужен интерактивный терминал" "An interactive terminal is required")"
+  step "$(T "Откат настройки" "Undoing the setup")"
+  T "  Вернутся: SSH (порт и способы входа), firewall, root, заблокированные аккаунты, системные файлы." \
+    "  Coming back: SSH (port and logins), the firewall, root, the locked accounts, the system files."; echo
+  T "  Останутся: установленные пакеты и пользователь, созданный при настройке." \
+    "  Staying: the installed packages and the user the setup created."; echo
+  echo "  $(T "Источник:" "From:") $first"
+  T "  Это окно не оборвётся. После отката проверь вход по-старому, прежде чем его закрыть." \
+    "  This session stays up. After the undo, try logging in the old way before you close it."; echo
+  ask_yn "$(T "Откатить настройку?" "Undo the setup?")" n || die "$(T "Отменено." "Cancelled.")"
+
+  # SSH: the old files back, one daemon on the old ports
+  was=$(current_ssh_ports)
+  rm -f "$SSHD_DROPIN"
+  cp -a "$first/ssh/." /etc/ssh/
+  now=$(current_ssh_ports)
+  CURRENT_SSH_PORTS=$was
+  # shellcheck disable=SC2086
+  if restart_sshd $now; then ok "$(T "SSH: как было, порты:" "SSH: as it was, ports:") $now"
+  else warn "$(T "sshd не перезапустился со старыми настройками — смотри вывод выше" "sshd did not restart on the old settings — see above")"; fi
+
+  # Firewall: the old rules, and off if it was off
+  if [[ -d $first/ufw ]]; then
+    cp -a "$first/ufw/." /etc/ufw/
+    if grep -qs '^ENABLED=yes' /etc/ufw/ufw.conf; then ufw reload >/dev/null 2>&1 || true
+    else ufw --force disable >/dev/null 2>&1 || true; fi
+  else
+    ufw --force disable >/dev/null 2>&1 || true
+  fi
+  ok "Firewall: $(ufw status 2>/dev/null | head -1 || true)"
+
+  # root: its keys back, and its password unlocked if this script locked it
+  for b in "${dirs[@]}"; do
+    [[ -f $b/root_authorized_keys ]] || continue
+    install -d -m 700 /root/.ssh
+    cp -a "$b/root_authorized_keys" /root/.ssh/authorized_keys
+    break
+  done
+  if [[ -r $STATE_FILE ]] && grep -qx 'LOCK_ROOT=yes' "$STATE_FILE"; then
+    passwd -u root &>/dev/null || true
+  else
+    T "  Пароль root не трогаю (не знаю, блокировал ли его скрипт). Разблокировать: sudo passwd -u root" \
+      "  The root password is left alone (no record that this script locked it). To unlock: sudo passwd -u root"; echo
+  fi
+
+  # The accounts the setup locked: shell, groups, keys, and their sudo rules
+  for b in "${dirs[@]}"; do
+    [[ -f $b/locked-users.tsv ]] || continue
+    while IFS=$'\t' read -r u shell groups; do
+      id "$u" &>/dev/null || continue
+      # two commands: -U refuses an account whose password would come out empty (a
+      # provider's key-only account), and would take the shell change down with it
+      usermod -s "${shell:-/bin/bash}" "$u" 2>/dev/null || true
+      usermod -U "$u" 2>/dev/null || true
+      for g in $groups; do gpasswd -a "$u" "$g" &>/dev/null || true; done
+      f=$(home_of "$u")
+      if [[ -f $b/authorized_keys.$u && -d $f/.ssh ]]; then cp -a "$b/authorized_keys.$u" "$f/.ssh/authorized_keys"; fi
+      ok "$u $(T "разблокирован" "unlocked")"
+    done <"$b/locked-users.tsv"
+  done
+  for f in /etc/sudoers.d/*; do
+    [[ -f $f ]] && grep -q '^# disabled by harden.sh: ' "$f" || continue
+    sed -i -E 's/^# disabled by harden\.sh: //' "$f"
+  done
+
+  # System files the setup replaced or edited
+  for f in login.defs issue issue.net apt/apt.conf.d/20auto-upgrades default/apport default/sysstat default/motd-news; do
+    if [[ -e $first/etc/$f ]]; then cp -a "$first/etc/$f" "/etc/$f"; fi
+  done
+  for b in "${dirs[@]}"; do
+    if [[ -f $b/hosts ]]; then cp -a "$b/hosts" /etc/hosts; break; fi
+  done
+  for b in "${dirs[@]}"; do
+    [[ -f $b/jail.local ]] || continue
+    cp -a "$b/jail.local" /etc/fail2ban/jail.local
+    if jail_local_is_ours; then rm -f /etc/fail2ban/jail.local; fi   # an earlier version's own file
+    break
+  done
+
+  # Everything the setup added
+  rm -f "$SYSCTL_CONF" /etc/sysctl.d/99-protect-links.conf "$PING_SYSCTL" \
+        /etc/modprobe.d/99-hardening.conf /etc/security/limits.d/99-nocore.conf \
+        /etc/systemd/coredump.conf.d/99-hardening.conf /etc/systemd/journald.conf.d/99-hardening.conf \
+        /etc/security/pwquality.conf.d/99-hardening.conf /etc/sudoers.d/99-hardening /etc/logrotate.d/harden-sudo \
+        /etc/audit/rules.d/99-hardening.rules /etc/needrestart/conf.d/99-hardening.conf \
+        /etc/apt/apt.conf.d/52-hardening-unattended /etc/apt/apt.conf.d/53-hardening-crowdsec \
+        "$F2B_JAIL" /usr/local/bin/server-status /etc/profile.d/99-server-status.sh
+  if [[ $(cat /etc/fail2ban/fail2ban.local 2>/dev/null) == $'[DEFAULT]\nallowipv6 = auto' ]]; then rm -f /etc/fail2ban/fail2ban.local; fi
+  visudo -cq || warn "$(T "sudoers: проверь /etc/sudoers.d" "sudoers: check /etc/sudoers.d")"
+  # the stock login greeting
+  for f in /etc/update-motd.d/*; do
+    [[ -e $f ]] || continue
+    real=$(readlink -f "$f")
+    if dpkg-statoverride --list "$real" &>/dev/null; then dpkg-statoverride --remove "$real" >/dev/null 2>&1 || true; fi
+    chmod 755 "$real" 2>/dev/null || true
+  done
+  # Telegram alerts
+  systemctl disable --now harden-login-watch.service harden-daily-report.timer harden-boot-alert.service &>/dev/null || true
+  rm -f /etc/systemd/system/harden-login-watch.service /etc/systemd/system/harden-alert@.service \
+        /etc/systemd/system/harden-boot-alert.service /etc/systemd/system/harden-daily-report.service \
+        /etc/systemd/system/harden-daily-report.timer /etc/systemd/system/*.service.d/harden-alert.conf \
+        /usr/local/sbin/harden-notify /usr/local/sbin/harden-login-watch /usr/local/sbin/harden-daily-report
+  for f in /etc/systemd/system/*.service.d; do rmdir "$f" 2>/dev/null || true; done
+  rm -rf /etc/harden
+  systemctl unmask apport.service &>/dev/null || true
+  chmod 644 /etc/crontab 2>/dev/null || true
+  chmod 755 /etc/cron.d /etc/cron.daily /etc/cron.hourly /etc/cron.weekly /etc/cron.monthly 2>/dev/null || true
+  systemctl daemon-reload
+  sysctl --system >/dev/null 2>&1 || true
+  systemctl restart systemd-journald || true
+  if command -v augenrules >/dev/null; then augenrules --load >/dev/null 2>&1 || true; fi
+  systemctl restart fail2ban &>/dev/null || true
+
+  echo
+  ok "$(T "Настройка откачена." "The setup is undone.")"
+  T "  Параметры ядра вернутся к прежним после перезагрузки." "  Kernel settings return to what they were after a reboot."; echo
+  T "  Пакеты остались (ufw, fail2ban, auditd, CrowdSec и др.); убрать: sudo apt purge <имя>." \
+    "  The packages stay (ufw, fail2ban, auditd, CrowdSec and the rest); to remove one: sudo apt purge <name>."; echo
+  T "  Не закрывай это окно, пока не проверишь вход по-старому." \
+    "  Do not close this window until you have checked that you can log in the old way."; echo
+}
+
 # Keep a copy for later (sudo harden --check / --setup-telegram). Run as `sudo harden`
 # the script is that copy already, and `install` onto itself fails — which under set -e
 # used to end a re-run with an error right before the final report.
@@ -2166,6 +2433,9 @@ main() {
       [[ $TELEGRAM == yes ]] || exit 1
       exit 0 ;;
     --ping) save_language; set_ping "${2:-}"; exit 0 ;;
+    --refresh) save_language; run_refresh; exit 0 ;;
+    --answers) load_answers; print_answers; exit 0 ;;
+    --undo) run_undo; exit 0 ;;
     "") ;;
     *) usage; exit 2 ;;
   esac
@@ -2190,6 +2460,9 @@ main() {
   lock_other_users
   lock_root
   install_self "$0"
+  SSH_PUBKEY=$(cat "$PUBKEY_FILE")
+  LOCK_ROOT=${LOCK_ROOT%% *}
+  save_answers
   final_report
 }
 

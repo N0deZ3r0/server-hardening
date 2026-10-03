@@ -9,14 +9,15 @@ The pieces of harden.sh are tested one by one elsewhere. This runs all of it, th
 person would on a fresh VPS: a cloud image boots under QEMU/KVM with cloud-init, root logs
 in with a key, the script asks its questions on a real terminal, a password is typed for
 the new user, the login on the new port is tried from outside before it is confirmed.
-Then the result is checked from outside and from inside, the machine is rebooted and
-checked again, and the setup is run a second time through the installed `sudo harden`.
+Then the result is checked from outside and from inside, --answers and --refresh are run,
+the machine is rebooted and checked again, the setup is run a second time through the
+installed `sudo harden`, and at the end --undo takes it all back.
 
 It exists because a part that passed every piece-by-piece test still failed as a whole:
 versions 2026.10.8 to 2026.10.17 could not finish on an Ubuntu 24.04 cloud image, and
-that was found only when someone ran one by hand.
+that was found only when someone ran one by hand. Its own first run found two more: the
+setup stopped on Debian 12 and on Ubuntu 26.04.
 """
-import os
 import pathlib
 import secrets
 import shlex
@@ -62,9 +63,12 @@ def run(*cmd, **kw):
 
 
 def ssh(port, user, command, check=True, timeout=180, extra=()):
-    r = subprocess.run(["ssh", *SSH, "-o", "BatchMode=yes", *extra, "-p", str(port),
-                        f"{user}@127.0.0.1", command],
-                       capture_output=True, text=True, timeout=timeout)
+    try:
+        r = subprocess.run(["ssh", *SSH, "-o", "BatchMode=yes", *extra, "-p", str(port),
+                            f"{user}@127.0.0.1", command],
+                           capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        r = subprocess.CompletedProcess([], 255, "", "timed out")
     if check and r.returncode != 0:
         print(r.stdout, r.stderr, flush=True)
         fail(f"`{command}` as {user} on port {port} returned {r.returncode}")
@@ -141,25 +145,25 @@ def answers(pub, **more):
     return " ".join(f"{k}={shlex.quote(v)}" for k, v in env.items())
 
 
-def drive(port, user, command, password, stage):
-    """Runs the setup on a terminal and answers what a person would be asked."""
+def drive(port, user, command, password, stage, finish=r"Done!", login_check=True):
+    """Runs a command on a terminal and answers what a person would be asked."""
     say(f"{stage}: {user}@{port}")
     child = pexpect.spawn("ssh", [*SSH, "-tt", "-p", str(port), f"{user}@127.0.0.1", command],
                           encoding="utf-8", codec_errors="replace", timeout=1800)
     child.logfile_read = sys.stdout
     patterns = [
-        r"Start\? \[y/n",                         # 0
+        r"(Start|Undo the setup)\? \[y/n",        # 0
         r"New password:",                         # 1
         r"Retype new password:",                  # 2
         r"Does key login on port \d+ work\?",     # 3
-        r"Done!",                                 # 4
+        finish,                                   # 4
         r"Error at line|rolled back|\[✗\]",       # 5
         r"\[sudo[^\]\n]*\][^\n]*:",               # 6  sudo and sudo-rs both start with "[sudo"
         pexpect.EOF,                              # 7
         pexpect.TIMEOUT,                          # 8
     ]
     done = False
-    confirmed = False
+    confirmed = not login_check
     while True:
         i = child.expect(patterns)
         if i == 0:
@@ -243,6 +247,39 @@ def verify(password, when):
         fail("a kernel setting the setup wrote is not in effect")
 
 
+def answers_and_refresh(password, pub):
+    say("--answers and --refresh")
+    r = ssh(NEW, "alex", sudo(password, "harden --answers"))
+    print(r.stdout)
+    for must in ("NEW_USER='alex'", f"SSH_PORT='{NEW}'", f"SSH_PUBKEY='{pub}'", "bash harden.sh"):
+        if must not in r.stdout:
+            fail(f"--answers does not give back: {must}")
+    r = ssh(NEW, "alex", sudo(password, "harden --refresh"), check=False, timeout=900)
+    print(r.stdout)
+    if r.returncode != 0 or "Settings refreshed" not in r.stdout:
+        fail("--refresh did not finish")
+
+
+def verify_undone():
+    say("checking that the setup is undone")
+    if not banner(OLD).startswith(b"SSH-"):
+        fail("after --undo nothing answers on the old port")
+    if banner(NEW).startswith(b"SSH-"):
+        fail("after --undo sshd still listens on the new port")
+    if ssh(OLD, "root", "id -un").stdout.strip() != "root":
+        fail("after --undo root cannot log in with its key, as it could before the setup")
+    if ssh(OLD, "provider", "sudo -n id -un").stdout.strip() != "root":
+        fail("after --undo the provider's account does not have its sudo back")
+    r = ssh(OLD, "root", "systemctl is-active ssh; ufw status | head -1; "
+                         "ls /etc/ssh/sshd_config.d/00-hardening.conf /etc/sysctl.d/99-hardening.conf "
+                         "/etc/harden /etc/fail2ban/jail.d/99-hardening.local /usr/local/bin/server-status 2>&1")
+    print(r.stdout)
+    if "active" not in r.stdout.splitlines()[:1][0] or "Status: inactive" not in r.stdout:
+        fail("after --undo: sshd is not running, or the firewall is still on")
+    if r.stdout.count("No such file or directory") != 5:
+        fail("after --undo some of the files the setup added are still there")
+
+
 def main():
     pub = boot()
     password = "E2e-" + secrets.token_urlsafe(9) + "-7q"
@@ -250,6 +287,8 @@ def main():
 
     drive(OLD, "root", f"{answers(pub)} bash /root/harden.sh", password, "first setup")
     verify(password, "after the setup")
+    answers_and_refresh(password, pub)
+    verify(password, "after --refresh")
 
     say("reboot")
     ssh(NEW, "alex", sudo(password, "systemctl reboot"), check=False)
@@ -262,6 +301,10 @@ def main():
     drive(NEW, "alex", f"sudo env {answers(pub, REUSE_USER='yes')} harden", password, "second setup")
     verify(password, "after the second setup")
 
+    drive(NEW, "alex", "sudo harden --undo", password, "undo",
+          finish=r"The setup is undone", login_check=False)
+    verify_undone()
+
     say(f"OK: {NAME}")
 
 
@@ -269,6 +312,4 @@ if __name__ == "__main__":
     try:
         main()
     finally:
-        pid = WORK / "qemu.pid"
-        if pid.exists():
-            subprocess.run(["sudo", "kill", pid.read_text().strip()], check=False)
+        subprocess.run(["sudo", "pkill", "-F", str(WORK / "qemu.pid")], check=False)
