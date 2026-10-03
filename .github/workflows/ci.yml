@@ -497,3 +497,36 @@ jobs:
           echo '# mine' | sudo tee /etc/fail2ban/fail2ban.local >/dev/null
           sudo bash -c 'source ./harden.sh; fail2ban_set_ipv6'
           test "$(cat /etc/fail2ban/fail2ban.local)" = '# mine'
+
+      - name: auditd — our rules are added to the admin's, not put in their place
+        # `-D` in a rules.d file reads like "delete everything". augenrules moves it to the
+        # top of the merged set, so rule files that were already there load as before.
+        run: |
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -q auditd >/dev/null
+          printf '%s\n' '-w /etc/hostname -p wa -k admin_rule' | sudo tee /etc/audit/rules.d/50-admin.rules >/dev/null
+          sudo bash -c 'source ./harden.sh; IS_CONTAINER=no; setup_auditd'
+          rules=$(sudo auditctl -l)
+          printf '%s\n' "$rules"
+          printf '%s\n' "$rules" | grep -F -- '-k admin_rule'
+          printf '%s\n' "$rules" | grep -F -- '-k identity'
+          printf '%s\n' "$rules" | grep -F -- '-k root_cmd'
+          # run again: the same set, nothing doubled
+          sudo bash -c 'source ./harden.sh; IS_CONTAINER=no; setup_auditd'
+          rules=$(sudo auditctl -l)
+          test "$(printf '%s\n' "$rules" | grep -c -- '-k admin_rule')" = 1
+          test "$(printf '%s\n' "$rules" | grep -c -- '-w /etc/passwd ')" = 1
+
+  containers:
+    name: --check in a container (${{ matrix.image }})
+    # The full setup needs a real machine; the audit does not. A plain Docker container is
+    # the hostile case for it — no systemd, no mount namespaces — on each supported release.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ['debian:12', 'debian:13', 'ubuntu:22.04', 'ubuntu:24.04', 'ubuntu:26.04']
+    steps:
+      - uses: actions/checkout@v5
+      - name: Runs to the end, creates nothing, and does not mistake "cannot look" for "broken"
+        run: docker run --rm -v "$PWD:/w:ro" "${{ matrix.image }}" bash /w/tools/ci-check-in-container.sh

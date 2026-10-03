@@ -784,6 +784,10 @@ EOF
 setup_auditd() {
   [[ $IS_CONTAINER == yes ]] && { info "$(T "Контейнер — auditd пропущен" "Container — auditd skipped")"; return; }
   step "auditd"
+  # -D looks like "delete every rule", and for rules typed in with auditctl and saved
+  # nowhere it is. Rule files already in rules.d are not lost: augenrules merges every
+  # file there and moves -D to the top of the result, so the admin's rules load as before
+  # and ours are added. CI checks exactly that.
   cat >/etc/audit/rules.d/99-hardening.rules <<'EOF'
 -D
 -b 8192
@@ -1299,11 +1303,17 @@ setup_ssh() {
   grep -qE '^\s*Include\s+/etc/ssh/sshd_config\.d/\*\.conf' /etc/ssh/sshd_config \
     || sed -i '1i Include /etc/ssh/sshd_config.d/*.conf' /etc/ssh/sshd_config
 
-  # Host keys: drop DSA/ECDSA, regenerate RSA below 3072 bits
-  rm -f /etc/ssh/ssh_host_dsa_key* /etc/ssh/ssh_host_ecdsa_key*
+  # Host keys. DSA and ECDSA key files are left where they are: the HostKey and
+  # HostKeyAlgorithms lines below decide what sshd offers, and deleting the files added
+  # nothing but a change that is harder to undo. An RSA key below 3072 bits is replaced —
+  # that one would be offered — and the old one stays in the backup.
   [[ -f /etc/ssh/ssh_host_ed25519_key ]] || ssh-keygen -q -t ed25519 -N "" -f /etc/ssh/ssh_host_ed25519_key
-  if [[ ! -f /etc/ssh/ssh_host_rsa_key ]] || (( $(ssh-keygen -lf /etc/ssh/ssh_host_rsa_key | awk '{print $1}') < 3072 )); then
+  if [[ ! -f /etc/ssh/ssh_host_rsa_key ]]; then
+    ssh-keygen -q -t rsa -b 4096 -N "" -f /etc/ssh/ssh_host_rsa_key
+  elif (( $(ssh-keygen -lf /etc/ssh/ssh_host_rsa_key | awk '{print $1}') < 3072 )); then
     rm -f /etc/ssh/ssh_host_rsa_key*; ssh-keygen -q -t rsa -b 4096 -N "" -f /etc/ssh/ssh_host_rsa_key
+    warn "$(T "RSA-ключ сервера был короче 3072 бит и заменён; старый — в $BACKUP_DIR/ssh. Клиент при входе может спросить про новый ключ." \
+              "The server's RSA host key was below 3072 bits and has been replaced; the old one is in $BACKUP_DIR/ssh. Clients may ask about the new key.")"
   fi
   # Weak DH groups
   if [[ -f /etc/ssh/moduli ]]; then
@@ -1423,6 +1433,11 @@ final_report() {
   [[ ${TELEGRAM:-no} == yes ]] || echo "  sudo harden --setup-telegram      — $(T "подключить уведомления" "add Telegram alerts")"
   warn "$(T "Docker публикует порты в обход UFW! Используй -p 127.0.0.1:PORT:PORT или ufw-docker." \
             "Docker publishes ports around UFW! Use -p 127.0.0.1:PORT:PORT or ufw-docker.")"
+  # On a VPS nobody misses USB storage; on a physical server a backup disk may depend on it
+  if [[ $VIRT == none ]]; then
+    warn "$(T "Физический сервер: USB-накопители отключены (usb-storage). Вернуть: убери эту строку из /etc/modprobe.d/99-hardening.conf" \
+              "Bare metal: USB storage is disabled (usb-storage). To undo, remove that line from /etc/modprobe.d/99-hardening.conf")"
+  fi
   if [[ -f /var/run/reboot-required ]]; then
     echo
     warn "$(T "Нужна перезагрузка: установлено новое ядро" "Reboot needed: a new kernel is installed") ($(uname -r) -> $(ls -1 /boot/vmlinuz-* | sort -V | tail -1 | sed 's|.*/vmlinuz-||'))"
@@ -1704,7 +1719,7 @@ chk() {  # chk pass|warn|fail|info "text" — info is shown and not counted: a f
 }
 
 run_check() {
-  local cfg v kex weak n list u out
+  local cfg v kex weak n list u out nons=no
   . /etc/os-release
   step "$(T "Проверка сервера — ничего не меняется" "Server check — nothing is changed")"
   echo "  ${PRETTY_NAME:-?}, kernel $(uname -r)"
@@ -1716,12 +1731,19 @@ run_check() {
   # exists for that one command and is seen by nothing else.
   if [[ -d /run/sshd ]]; then
     cfg=$(sshd -T 2>&1) || { v=$(head -1 <<<"$cfg"); cfg=""; }
-  else
+  elif unshare --mount sh -c 'mount -t tmpfs tmpfs /run && mkdir /run/sshd' 2>/dev/null; then
     cfg=$(unshare --mount sh -c 'mount -t tmpfs tmpfs /run && mkdir /run/sshd && exec sshd -T' 2>&1) \
       || { v=$(head -1 <<<"$cfg"); cfg=""; }
+  else
+    # Containers often refuse a new mount namespace. Not being able to look is not the
+    # same as a broken config, so it is reported as such and not counted as a failure.
+    cfg=""; nons=yes
   fi
   sv() { awk -v k="$1" '$1==k{$1=""; sub(/^ /,""); print; exit}' <<<"$cfg"; }
-  if [[ -z $cfg ]]; then
+  if [[ $nons == yes ]]; then
+    chk warn "$(T "Конфигурацию SSH не прочитать, ничего не создавая: нет /run/sshd, а отдельное пространство монтирования здесь запрещено. Запусти sshd или выполни: mkdir /run/sshd" \
+                  "The SSH config cannot be read without creating something: /run/sshd is missing and a private mount namespace is not allowed here. Start sshd, or run: mkdir /run/sshd")"
+  elif [[ -z $cfg ]]; then
     chk fail "$(T "sshd -T не отработал — конфиг SSH не читается" "sshd -T failed — the SSH config cannot be read"): ${v:-?}"
   else
     v=$(awk '$1=="port"{print $2}' <<<"$cfg" | paste -sd' ' -)
