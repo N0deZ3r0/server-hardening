@@ -87,6 +87,8 @@ jobs:
         # A local stand-in for api.telegram.org records what would have been sent.
         run: |
           set -x
+          # Whatever happens, show what the stand-in received and what the watcher logged
+          trap 'set +x; echo "--- tg.log"; cat tg.log 2>/dev/null; echo "--- watcher"; sudo journalctl -u harden-login-watch --no-pager -n 20 2>/dev/null' EXIT
           cat > fake_tg.py <<'EOF'
           import http.server, json, urllib.parse
           class H(http.server.BaseHTTPRequestHandler):
@@ -148,7 +150,6 @@ jobs:
           sudo bash -c "source ./harden.sh; TELEGRAM=yes; TG_TOKEN=$token; TG_CHAT_ID=42; HARDEN_TG_API=http://127.0.0.1:18080; install_notifications"
           pid2=$(systemctl show -p MainPID --value harden-login-watch)
           test -n "$pid2" && test "$pid2" != 0 && test "$pid1" != "$pid2"
-          cat tg.log
 
       - name: detect_admin_ip reads the peer column of ss
         # With a state filter ss drops the State column, so $3 is local and $4 is the peer.
