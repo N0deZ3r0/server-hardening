@@ -128,7 +128,7 @@ jobs:
           for _ in $(seq 20); do grep -q '203.0.113.9' tg.log && break; sleep 1; done
           sleep 2
           grep -F 'SSH login: alex from 203.0.113.9 (publickey, ED25519 SHA256:ci)' tg.log
-          test "$(grep -c 'SSH login' tg.log)" = 1
+          test "$(grep -c 'SSH login: ' tg.log)" = 1
           # The daily report counts the same way
           sudo /usr/local/sbin/harden-daily-report
           grep -F 'Daily report' tg.log | grep -F 'SSH logins (24 h): 1 — alex@203.0.113.9×1'
