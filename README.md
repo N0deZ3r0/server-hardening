@@ -5,7 +5,7 @@
 **One command turns a fresh Debian or Ubuntu VPS into a server that only lets in your key — and it will not close the old door until you have walked through the new one.**
 
 [![CI](https://github.com/N0deZ3r0/server-hardening/actions/workflows/ci.yml/badge.svg)](https://github.com/N0deZ3r0/server-hardening/actions/workflows/ci.yml)
-![version](https://img.shields.io/badge/version-2026.10.8-3b5bdb)
+![version](https://img.shields.io/badge/version-2026.10.9-3b5bdb)
 ![Debian](https://img.shields.io/badge/Debian-12%20%2F%2013-a80030)
 ![Ubuntu](https://img.shields.io/badge/Ubuntu-22.04%20%2F%2024.04%20%2F%2026.04-e95420)
 ![bash](https://img.shields.io/badge/bash-single%20file-2f9e44)
@@ -24,7 +24,7 @@ summary, can report to Telegram, and finishes with a Lynis audit. Later, `sudo h
 audits the server without changing anything. The interface is in English and Russian.
 
 ```bash
-curl -fsSLo harden.sh https://github.com/N0deZ3r0/server-hardening/releases/download/v2026.10.8/harden.sh && echo "bc6f3dd9af72a60581dc6223e33dbe20dc31755c46bdc597cbea56db17cf47b5  harden.sh" | sha256sum -c - && sudo bash harden.sh
+curl -fsSLo harden.sh https://github.com/N0deZ3r0/server-hardening/releases/download/v2026.10.9/harden.sh && echo "5d49b8b07d0271291fe0124cdcf6b7f592d181c719c295c77157fafc5ffd31c2  harden.sh" | sha256sum -c - && sudo bash harden.sh
 ```
 
 The command downloads a fixed release and checks its SHA-256 before running it: if a single
@@ -97,7 +97,7 @@ Then a password for the new user — sudo needs it.
 | **Kernel** | `kptr_restrict`, `dmesg_restrict`, BPF hardening, `ptrace_scope`, protected links/FIFOs, anti-spoofing and redirect filters, SYN cookies, BBR; unused filesystems and protocols (dccp, sctp, rds, tipc) disabled |
 | **Audit** | auditd rules for accounts, sudoers, SSH config, cron, kernel modules, clock, commands run as root; process accounting; sysstat |
 | **Updates** | unattended-upgrades for security updates, needrestart, optional nightly reboot; local config files are kept on upgrade (`--force-confold`), so a package whose config this script edited is not held back |
-| **System** | AppArmor, chrony, persistent size-capped journal, no core dumps, `UMASK 027`, per-user `/tmp` (libpam-tmpdir), ModemManager and udisks2 off, legal pre-login banner |
+| **System** | AppArmor, chrony, persistent size-capped journal, no core dumps (apport off), `UMASK 027`, per-user `/tmp` (libpam-tmpdir), ModemManager and udisks2 off, legal pre-login banner |
 | **Login** | The stock Ubuntu greeting (Welcome, ESM, ads, legal) replaced by `server-status` |
 | **Alerts** | Optional Telegram messages: every SSH login, a protective service failing, boot, a daily report |
 | **Report** | Lynis audit, report in `/root/harden-report.txt`, log in `/var/log/harden.log`; the script stays as `/usr/local/sbin/harden` for `--check` |
@@ -310,11 +310,12 @@ Knowingly open, with the reason for each:
   other versions are supported by design — version checks, algorithm filtering — not by a
   run on each.
 - **Live runs are on one server** (Ubuntu 24.04, KVM): the full setup from a clean image,
-  Telegram alerts, `--check`. Those runs found seven things CI had missed — a false failure
+  Telegram alerts, `--check`. Those runs found eight things CI had missed — a false failure
   in the audit, key-lookup log lines reported as logins, two alerts per connect from clients
   that open a second connection, `journalctl -f -n 0` dropping lines, files written
-  unreadable under the script's own `UMASK 027`, UFW turning ping back on, and an sshd left
-  on the old port through the switch — and each is now replayed in CI. The failure alert is
+  unreadable under the script's own `UMASK 027`, UFW turning ping back on, an sshd left on the
+  old port through the switch, and apport re-enabling dumps of privileged programs at every
+  boot — and each is now replayed in CI. The failure alert is
   verified in CI only, with a unit that really fails, against a stand-in for the Bot API.
 - **Not answering ping is obscurity, not protection.** It takes the server out of ping
   sweeps; a port scan finds it just the same. The practical reason to turn it on is a VPN

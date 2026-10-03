@@ -37,7 +37,7 @@ set -Eeuo pipefail
 # explicitly where it is written.
 umask 022
 
-HARDEN_VERSION="2026.10.8"
+HARDEN_VERSION="2026.10.9"
 LOG_FILE="/var/log/harden.log"
 REPORT_FILE="/root/harden-report.txt"
 BACKUP_DIR="/root/harden-backup-$(date +%Y%m%d-%H%M%S)"
@@ -518,6 +518,25 @@ EOF
   return 0
 }
 
+# Ubuntu's crash reporter. Every time it starts — so at every boot, after sysctl.d has
+# been applied — it sets fs.suid_dumpable=2 and points kernel.core_pattern at itself,
+# which turns memory dumps of privileged programs back on. Seen live: the audit passed
+# before the reboot and warned about fs.suid_dumpable after it.
+disable_apport() {
+  systemctl cat apport.service &>/dev/null || return 0
+  local u
+  for u in apport.service apport-autoreport.path apport-autoreport.timer apport-forward.socket; do
+    systemctl disable --now "$u" &>/dev/null || true
+  done
+  [[ -f /etc/default/apport ]] && sed -i 's/^enabled=.*/enabled=0/' /etc/default/apport
+  # Stopping it normally restores both values; set them anyway rather than rely on that
+  sysctl -q -w fs.suid_dumpable=0 2>/dev/null || true
+  if grep -qs apport /proc/sys/kernel/core_pattern; then
+    sysctl -q -w kernel.core_pattern=core 2>/dev/null || true
+  fi
+  info "$(T "Отключён apport (сборщик дампов памяти)" "Disabled apport (crash dump collector)")"
+}
+
 # ---------- 4. system ----------
 harden_system() {
   step "$(T "Ядро и система" "Kernel and system")"
@@ -567,6 +586,7 @@ dev.tty.ldisc_autoload = 0
 kernel.core_uses_pid = 1
 kernel.ctrl-alt-del = 0
 EOF
+  disable_apport
   sysctl --system >/dev/null 2>&1 || warn "$(T "Часть sysctl не применилась (нормально для контейнеров)" "Some sysctl values were not applied (normal in containers)")"
 
   if [[ $DISABLE_PING == yes ]]; then

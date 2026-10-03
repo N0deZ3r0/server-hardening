@@ -117,6 +117,25 @@ jobs:
           sudo ufw disable
           if sudo HARDEN_LANG=en bash harden.sh --ping maybe; then echo "::error::a wrong argument was accepted"; exit 1; fi
 
+      - name: apport does not turn dumps of privileged programs back on
+        # Found only after a reboot on a live server: apport sets fs.suid_dumpable=2 every
+        # time it starts. First show that this is what it does, then that it is stopped.
+        run: |
+          set -x
+          dpkg -s apport >/dev/null 2>&1 || sudo apt-get install -y -q apport >/dev/null
+          sudo sed -i 's/^enabled=.*/enabled=1/' /etc/default/apport
+          sudo systemctl enable apport >/dev/null 2>&1 || true
+          sudo systemctl restart apport
+          sysctl fs.suid_dumpable kernel.core_pattern
+          test "$(sysctl -n fs.suid_dumpable)" = 2
+          grep -q apport /proc/sys/kernel/core_pattern
+          sudo bash -c 'source ./harden.sh; disable_apport'
+          test "$(sysctl -n fs.suid_dumpable)" = 0
+          if grep -q apport /proc/sys/kernel/core_pattern; then echo "::error::core dumps still go to apport"; exit 1; fi
+          test "$(systemctl is-active apport)" != active
+          test "$(systemctl is-enabled apport 2>/dev/null)" != enabled
+          grep -q '^enabled=0' /etc/default/apport
+
       - name: A leftover sshd does not survive the port switch
         # Replays what a live run showed: an sshd that systemd was not going to stop held
         # port 22 through both restarts, on the old config; the new daemon could not bind
