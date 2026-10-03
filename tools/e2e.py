@@ -83,13 +83,30 @@ def say(msg):
     print(f"\n=== {msg}", flush=True)
 
 
+PASSWORD = ""       # of the user the setup creates; set once it is chosen
+
+# What the machine looks like at the moment something went wrong: who listens where, what
+# the firewall and fail2ban hold, what sshd and the kernel logged last.
+STATE = ("echo '--- sshd listeners'; ss -Hltnp | grep -E 'sshd|systemd' ; "
+         "echo '--- units'; systemctl is-active ssh ssh.socket fail2ban crowdsec; systemctl show -p MainPID -p NRestarts ssh; "
+         "echo '--- firewall'; ufw status numbered; "
+         "echo '--- fail2ban'; fail2ban-client status sshd; tail -n 15 /var/log/fail2ban.log; "
+         "echo '--- crowdsec'; cscli decisions list 2>&1 | tail -n 8; "
+         "echo '--- sshd, last lines'; journalctl -u ssh -n 30 --no-pager -o short-precise; "
+         "echo '--- kernel, firewall lines'; journalctl -k --since -5min --no-pager -o short-precise | grep -i ufw | tail -n 15; "
+         "echo '--- setup log'; tail -n 40 /var/log/harden.log")
+
+
 def fail(msg):
     print(f"\nE2E FAILED ({NAME}): {msg}", flush=True)
     for port, user in ((THIRD, "alex"), (NEW, "alex"), (OLD, "root")):
-        r = ssh(port, user, "tail -n 60 /var/log/harden.log 2>/dev/null || sudo -n tail -n 60 /var/log/harden.log",
-                check=False)
-        if r.stdout.strip():
-            print(f"--- /var/log/harden.log via {user}@{port}\n{r.stdout}", flush=True)
+        if user == "root":
+            command = f"sh -c {shlex.quote(STATE)} 2>&1"
+        else:
+            command = f"printf '%s\\n' {shlex.quote(PASSWORD)} | sudo -S sh -c {shlex.quote(STATE)} 2>&1"
+        r = ssh(port, user, command, check=False, timeout=60)
+        if "--- firewall" in r.stdout:
+            print(f"--- the machine, seen through {user}@{port}\n{r.stdout}", flush=True)
             break
     sys.exit(1)
 
@@ -309,8 +326,12 @@ def first_setup_question(password):
 def port_change_question(password):
     """A server that is already set up: until the new port is confirmed the old one keeps
     the rules of the earlier setup — it must not fall back to what the image came with."""
-    if not banner(NEW).startswith(b"SSH-"):
-        fail("the old port was closed before the new one was confirmed")
+    tries = []
+    for _ in range(4):
+        tries.append(banner(NEW)[:8])
+        time.sleep(1.5)
+    if not all(t.startswith(b"SSH-") for t in tries):
+        fail(f"the old port does not answer while the new one waits to be confirmed (four tries, 1.5 s apart: {tries})")
     if ssh(NEW, "alex", "id -un", check=False).stdout.strip() != "alex":
         fail("the old way in (alex, on the old port) stopped working before the new one was confirmed")
     r = ssh(THIRD, "alex", sudo(password, f"sshd -T -C user=alex,host=localhost,addr=127.0.0.1,lport={NEW}"))
@@ -544,8 +565,9 @@ def verify_undone(units_before, files_before):
 
 
 def main():
+    global PASSWORD
     pub = boot()
-    password = "E2e-" + secrets.token_urlsafe(9) + "-7q"
+    password = PASSWORD = "E2e-" + secrets.token_urlsafe(9) + "-7q"
     run("scp", *SSH, "-P", str(OLD), str(ROOT / "harden.sh"), "root@127.0.0.1:/root/harden.sh")
     server = http.server.ThreadingHTTPServer(("127.0.0.1", API_PORT), BotAPI)
     threading.Thread(target=server.serve_forever, daemon=True).start()

@@ -1959,8 +1959,11 @@ chat=$(sed -n 's/^TG_CHAT_ID=//p' "$CONF")
 api=$(sed -n 's/^TG_API=//p' "$CONF")
 [ -n "$token" ] && [ -n "$chat" ] || exit 0
 if [ "${1:-}" = --boot ]; then set -- "🔄 Server started — kernel $(uname -r)"; fi
+# --retry-all-errors: on its own --retry gives up at once on a refused connection or a
+# name that does not resolve yet — which is what the message after a boot runs into,
+# sent seconds after the network comes up
 printf 'url = "%s/bot%s/sendMessage"\n' "${api:-https://api.telegram.org}" "$token" \
-  | curl -sS --max-time 15 --retry 3 --retry-delay 5 -K - -o /dev/null \
+  | curl -sS --max-time 15 --retry 3 --retry-delay 5 --retry-all-errors -K - -o /dev/null \
       --data-urlencode "chat_id=$chat" \
       --data-urlencode "text=🖥 $(hostname): $*" \
       --data-urlencode "disable_web_page_preview=true" 2>/dev/null

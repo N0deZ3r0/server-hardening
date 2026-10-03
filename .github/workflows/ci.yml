@@ -636,6 +636,14 @@ jobs:
           sudo bash -c "source ./harden.sh; TELEGRAM=yes; TG_TOKEN=$token; TG_CHAT_ID=42; HARDEN_TG_API=http://127.0.0.1:18080; install_notifications"
           pid2=$(systemctl show -p MainPID --value harden-login-watch)
           test -n "$pid2" && test "$pid2" != 0 && test "$pid1" != "$pid2"
+          # The network is not always there when a message is due: the one after a boot is
+          # sent seconds into it. A refused connection is tried again, not given up on —
+          # here the API starts answering four seconds after the message is sent.
+          sudo sed -i 's|^TG_API=.*|TG_API=http://127.0.0.1:18081|' /etc/harden/telegram.conf
+          sed 's/18080/18081/' fake_tg.py > fake_tg2.py
+          ( sleep 4; exec python3 fake_tg2.py ) &
+          sudo /usr/local/sbin/harden-notify "late listener"
+          grep -F 'late listener' tg.log
 
       - name: detect_admin_ip reads the peer column of ss
         # With a state filter ss drops the State column, so $3 is local and $4 is the peer.
