@@ -30,7 +30,7 @@
 # =============================================================================
 set -Eeuo pipefail
 
-HARDEN_VERSION="2026.10.4"
+HARDEN_VERSION="2026.10.5"
 LOG_FILE="/var/log/harden.log"
 REPORT_FILE="/root/harden-report.txt"
 BACKUP_DIR="/root/harden-backup-$(date +%Y%m%d-%H%M%S)"
@@ -709,14 +709,22 @@ pct()  {  # free %: red below 10, yellow below 25
   else echo -e "${GREEN}$1%${NC}"; fi
 }
 svc()  {  # installed services only
-  systemctl cat "$1.service" >/dev/null 2>&1 || return 0
-  local state
+  # "Installed" is decided by the unit file on disk, not by asking systemd: in the first
+  # seconds after boot that query can fail, and every service then vanished from the list
+  # (seen live: only ufw was shown at "Uptime: 0 minutes").
+  local f state found=""
+  for f in /etc/systemd/system /run/systemd/system /usr/local/lib/systemd/system /usr/lib/systemd/system /lib/systemd/system; do
+    [ -e "$f/$1.service" ] && { found=1; break; }
+  done
+  [ -n "$found" ] || return 0
   state=$(systemctl is-active "$1" 2>/dev/null)
   case $state in
     active) printf " %-10s %b\n" "$1" "${GREEN}✓${NC}" ;;
     # Right after boot some services take a while (CrowdSec: ~20 s) — not a failure
     activating|reloading) printf " %-10s %b\n" "$1" "${YELLOW}… starting${NC}" ;;
-    *) printf " %-10s %b\n" "$1" "${RED}✗ ${state:-unknown}${NC}" ;;
+    # No answer from systemd at all: say so rather than hide the service or call it dead
+    "") printf " %-10s %b\n" "$1" "${YELLOW}? no answer yet${NC}" ;;
+    *) printf " %-10s %b\n" "$1" "${RED}✗ ${state}${NC}" ;;
   esac
 }
 

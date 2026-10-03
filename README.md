@@ -5,7 +5,7 @@
 **One command turns a fresh Debian or Ubuntu VPS into a server that only lets in your key — and it will not close the old door until you have walked through the new one.**
 
 [![CI](https://github.com/N0deZ3r0/server-hardening/actions/workflows/ci.yml/badge.svg)](https://github.com/N0deZ3r0/server-hardening/actions/workflows/ci.yml)
-![version](https://img.shields.io/badge/version-2026.10.4-3b5bdb)
+![version](https://img.shields.io/badge/version-2026.10.5-3b5bdb)
 ![Debian](https://img.shields.io/badge/Debian-12%20%2F%2013-a80030)
 ![Ubuntu](https://img.shields.io/badge/Ubuntu-22.04%20%2F%2024.04%20%2F%2026.04-e95420)
 ![bash](https://img.shields.io/badge/bash-single%20file-2f9e44)
@@ -24,7 +24,7 @@ summary, can report to Telegram, and finishes with a Lynis audit. Later, `sudo h
 audits the server without changing anything. The interface is in English and Russian.
 
 ```bash
-curl -fsSLo harden.sh https://github.com/N0deZ3r0/server-hardening/releases/download/v2026.10.4/harden.sh && echo "cad3bb001a7b8340c1a5f15a67dcc8d818e2493e59ae059f4da199c71b1b13da  harden.sh" | sha256sum -c - && sudo bash harden.sh
+curl -fsSLo harden.sh https://github.com/N0deZ3r0/server-hardening/releases/download/v2026.10.5/harden.sh && echo "08749338c7a6465cd8d88731338147d31c631240457f41433b2e08492bd4a491  harden.sh" | sha256sum -c - && sudo bash harden.sh
 ```
 
 The command downloads a fixed release and checks its SHA-256 before running it: if a single

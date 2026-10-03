@@ -201,3 +201,12 @@ jobs:
           echo "$out"
           echo "$out" | grep -q 'SYSTEM STATUS'
           echo "$out" | grep -q 'CPU:'
+          # Installed services are listed whatever state they are in (the runner has both
+          # units: docker running, ssh not)
+          echo "$out" | grep -qE '^ ?docker +.*✓'
+          echo "$out" | grep -qE '^ ?ssh +.*✗ inactive'
+          # ...and stay listed when systemd cannot be asked, instead of vanishing
+          mkdir -p nobus && printf '#!/bin/sh\nexit 1\n' > nobus/systemctl && chmod +x nobus/systemctl
+          out=$(PATH="$PWD/nobus:$PATH" bash server-status)
+          echo "$out" | sed -n '/^-.*-$/,$p' | tail -8
+          echo "$out" | grep -qE '^ ?ssh +.*no answer yet'
