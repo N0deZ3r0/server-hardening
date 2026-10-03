@@ -127,8 +127,12 @@ jobs:
           if ! systemctl cat apport.service >/dev/null 2>&1; then
             sudo apt-get update -q >/dev/null
             sudo apt-get install -y -q --reinstall -o Dpkg::Options::=--force-confmiss apport >/dev/null
-            sudo systemctl daemon-reload
           fi
+          # ...and the image also leaves the init script non-executable, which hides the
+          # service from systemd. Put it back the way a stock Ubuntu server has it.
+          sudo dpkg-statoverride --remove /etc/init.d/apport 2>/dev/null || true
+          sudo chmod 755 /etc/init.d/apport
+          sudo systemctl daemon-reload
           ls -l /etc/init.d/apport /usr/lib/systemd/system/apport* 2>&1 || true
           systemctl cat apport.service >/dev/null
           sudo sed -i 's/^enabled=.*/enabled=1/' /etc/default/apport
