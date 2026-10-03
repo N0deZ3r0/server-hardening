@@ -507,13 +507,14 @@ jobs:
           sudo bash -c 'source ./harden.sh; IS_CONTAINER=no; setup_auditd'
           rules=$(sudo auditctl -l)
           printf '%s\n' "$rules"
-          printf '%s\n' "$rules" | grep -F -- '-k admin_rule'
-          printf '%s\n' "$rules" | grep -F -- '-k identity'
-          printf '%s\n' "$rules" | grep -F -- '-k root_cmd'
+          # auditctl prints a key as `-k name` for a watch and `-F key=name` for a syscall rule
+          printf '%s\n' "$rules" | grep -F 'admin_rule'
+          printf '%s\n' "$rules" | grep -F 'identity'
+          printf '%s\n' "$rules" | grep -F 'root_cmd'
           # run again: the same set, nothing doubled
           sudo bash -c 'source ./harden.sh; IS_CONTAINER=no; setup_auditd'
           rules=$(sudo auditctl -l)
-          test "$(printf '%s\n' "$rules" | grep -c -- '-k admin_rule')" = 1
+          test "$(printf '%s\n' "$rules" | grep -c 'admin_rule')" = 1
           test "$(printf '%s\n' "$rules" | grep -c -- '-w /etc/passwd ')" = 1
 
   containers:

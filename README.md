@@ -5,7 +5,7 @@
 **One command turns a fresh Debian or Ubuntu VPS into a server that only lets in your key — and it will not close the old door until you have walked through the new one.**
 
 [![CI](https://github.com/N0deZ3r0/server-hardening/actions/workflows/ci.yml/badge.svg)](https://github.com/N0deZ3r0/server-hardening/actions/workflows/ci.yml)
-![version](https://img.shields.io/badge/version-2026.10.13-3b5bdb)
+![version](https://img.shields.io/badge/version-2026.10.14-3b5bdb)
 ![Debian](https://img.shields.io/badge/Debian-12%20%2F%2013-a80030)
 ![Ubuntu](https://img.shields.io/badge/Ubuntu-22.04%20%2F%2024.04%20%2F%2026.04-e95420)
 ![bash](https://img.shields.io/badge/bash-single%20file-2f9e44)
@@ -24,7 +24,7 @@ summary, can report to Telegram, and finishes with a Lynis audit. Later, `sudo h
 audits the server without changing anything. The interface is in English and Russian.
 
 ```bash
-curl -fsSLo harden.sh https://github.com/N0deZ3r0/server-hardening/releases/download/v2026.10.13/harden.sh && echo "6ed0ebd7940557a9492294a0270dd30a5c3258b4506e3fe9ceb9e80fffdb0f82  harden.sh" | sha256sum -c - && sudo bash harden.sh
+curl -fsSLo harden.sh https://github.com/N0deZ3r0/server-hardening/releases/download/v2026.10.14/harden.sh && echo "e95cb9394fb4e764e84880783f7daee35ce67483ed5fca0017f4a034b02ec35d  harden.sh" | sha256sum -c - && sudo bash harden.sh
 ```
 
 The command downloads a fixed release and checks its SHA-256 before running it: if a single
@@ -194,7 +194,9 @@ configuration (`sshd -T`), accounts and sudo rules, firewall, fail2ban and Crowd
 AppArmor, updates, clock and kernel settings, and prints one line each. On a server this
 script set up, every kernel value it wrote is compared with the live one, so a setting that
 something else has put back shows up. Package configs that an update kept back for review
-are counted. An illustration of the format:
+are counted. Where it cannot look — a container that will not let it read the SSH config
+without creating a directory — it says so with `!` instead of calling the config broken.
+An illustration of the format:
 
 ```
 SSH
@@ -255,6 +257,7 @@ sudo HARDEN_LANG=en NEW_USER=sysop SSH_PORT=42222 GITHUB_KEYS_USER=yourname \
 | Virtualisation | KVM, VMware, Hyper-V, Xen fully. LXC/OpenVZ partly — auditd, AppArmor and some sysctl values are skipped |
 | Architecture | x86_64 and ARM64 |
 | Run live | Ubuntu 24.04.5, KVM (OpenStack with cloud-init), 2 vCPU / 2 GB: clean run, Lynis 78 → 84, and 86 after the reboot |
+| Run in CI | every push: the pieces of the setup on Ubuntu 24.04, and `--check` inside Debian 12/13 and Ubuntu 22.04/24.04/26.04 containers |
 
 **Cloud providers** (AWS, Oracle, Hetzner Cloud, GCP, Azure) have a firewall of their own
 in the control panel. Open the new SSH port there *before* confirming the login. If you
@@ -290,7 +293,7 @@ On a server that is already set up, put the newer script in place of the old one
 download and checksum, without running the setup:
 
 ```bash
-curl -fsSLo harden.sh https://github.com/N0deZ3r0/server-hardening/releases/download/v2026.10.13/harden.sh && echo "6ed0ebd7940557a9492294a0270dd30a5c3258b4506e3fe9ceb9e80fffdb0f82  harden.sh" | sha256sum -c - && sudo install -m 755 harden.sh /usr/local/sbin/harden
+curl -fsSLo harden.sh https://github.com/N0deZ3r0/server-hardening/releases/download/v2026.10.14/harden.sh && echo "e95cb9394fb4e764e84880783f7daee35ce67483ed5fca0017f4a034b02ec35d  harden.sh" | sha256sum -c - && sudo install -m 755 harden.sh /usr/local/sbin/harden
 ```
 
 That replaces the commands — `--check`, `--ping`, `--lang`, `--setup-telegram` — and leaves
@@ -332,7 +335,7 @@ Knowingly open, with the reason for each:
 
 - **Live-tested on one system.** Ubuntu 24.04 on KVM ran end to end several times; the
   other versions are supported by design — version checks, algorithm filtering — not by a
-  run on each.
+  run on each. Only `--check` is run on every supported release, in a container in CI.
 - **Live runs are on one server** (Ubuntu 24.04, KVM): the full setup from a clean image,
   Telegram alerts, `--check`. Those runs found nine things CI had missed — a false failure
   in the audit, key-lookup log lines reported as logins, two alerts per connect from clients
@@ -370,7 +373,8 @@ Knowingly open, with the reason for each:
   `crowdsec` and `crowdsec-firewall-bouncer-nftables` can come from there — a compromised
   repository still cannot ship a new openssh or sudo. If the vendor rotates the key,
   CrowdSec is skipped until the fingerprint here is updated; CI checks it on every push.
-- **USB storage is disabled** — irrelevant on a VPS, noticeable on bare metal.
+- **USB storage is disabled** — irrelevant on a VPS, noticeable on bare metal, where the
+  final report says so and how to undo it.
 - **Lynis suggestions left alone:** separate `/home` `/tmp` `/var` partitions (only
   possible at install time), a GRUB password (gets in the way of the provider console),
   AIDE and malware scanners (slow, noisy, false positives), forced password expiry

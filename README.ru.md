@@ -5,7 +5,7 @@
 **Одна команда превращает свежий VPS на Debian или Ubuntu в сервер, который пускает только по вашему ключу, — и не закроет старую дверь, пока вы не прошли через новую.**
 
 [![CI](https://github.com/N0deZ3r0/server-hardening/actions/workflows/ci.yml/badge.svg)](https://github.com/N0deZ3r0/server-hardening/actions/workflows/ci.yml)
-![version](https://img.shields.io/badge/version-2026.10.13-3b5bdb)
+![version](https://img.shields.io/badge/version-2026.10.14-3b5bdb)
 ![Debian](https://img.shields.io/badge/Debian-12%20%2F%2013-a80030)
 ![Ubuntu](https://img.shields.io/badge/Ubuntu-22.04%20%2F%2024.04%20%2F%2026.04-e95420)
 ![bash](https://img.shields.io/badge/bash-%D0%BE%D0%B4%D0%B8%D0%BD%20%D1%84%D0%B0%D0%B9%D0%BB-2f9e44)
@@ -25,7 +25,7 @@ CrowdSec, усиливает ядро, включает автообновлен
 Интерфейс — на русском и английском.
 
 ```bash
-curl -fsSLo harden.sh https://github.com/N0deZ3r0/server-hardening/releases/download/v2026.10.13/harden.sh && echo "6ed0ebd7940557a9492294a0270dd30a5c3258b4506e3fe9ceb9e80fffdb0f82  harden.sh" | sha256sum -c - && sudo bash harden.sh
+curl -fsSLo harden.sh https://github.com/N0deZ3r0/server-hardening/releases/download/v2026.10.14/harden.sh && echo "e95cb9394fb4e764e84880783f7daee35ce67483ed5fca0017f4a034b02ec35d  harden.sh" | sha256sum -c - && sudo bash harden.sh
 ```
 
 Команда скачивает конкретный релиз и сверяет его SHA-256 до запуска: если отличается хоть
@@ -196,7 +196,9 @@ sudo harden --check          # или: sudo bash harden.sh --check
 обновления, время и параметры ядра и выводит по строке на каждый пункт. На сервере,
 который настраивал этот скрипт, каждое записанное им значение ядра сверяется с
 действующим, так что параметр, который что-то вернуло обратно, будет виден. Считаются и
-конфиги пакетов, которые обновление отложило для просмотра. Пример формата:
+конфиги пакетов, которые обновление отложило для просмотра. Там, где посмотреть нельзя —
+контейнер не даёт прочитать конфигурацию SSH, не создавая каталог, — проверка так и пишет
+с `!`, а не объявляет конфигурацию сломанной. Пример формата:
 
 ```
 SSH
@@ -258,6 +260,7 @@ sudo HARDEN_LANG=ru NEW_USER=sysop SSH_PORT=42222 GITHUB_KEYS_USER=вашник 
 | Виртуализация | KVM, VMware, Hyper-V, Xen — полностью. LXC/OpenVZ — частично: auditd, AppArmor и часть sysctl пропускаются |
 | Архитектура | x86_64 и ARM64 |
 | Проверено вживую | Ubuntu 24.04.5, KVM (OpenStack с cloud-init), 2 vCPU / 2 ГБ: чистый прогон, Lynis 78 → 84, после перезагрузки 86 |
+| Проверяется в CI | при каждом изменении: части настройки на Ubuntu 24.04 и `--check` в контейнерах Debian 12/13 и Ubuntu 22.04/24.04/26.04 |
 
 **У облачных хостеров** (AWS, Oracle, Hetzner Cloud, GCP, Azure) есть свой firewall в
 панели. Откройте там новый порт SSH *до* того, как подтверждать вход. Если забыть, проверка
@@ -292,7 +295,7 @@ sudo harden --lang en                  # сменить запомненный �
 контрольная сумма, без запуска настройки:
 
 ```bash
-curl -fsSLo harden.sh https://github.com/N0deZ3r0/server-hardening/releases/download/v2026.10.13/harden.sh && echo "6ed0ebd7940557a9492294a0270dd30a5c3258b4506e3fe9ceb9e80fffdb0f82  harden.sh" | sha256sum -c - && sudo install -m 755 harden.sh /usr/local/sbin/harden
+curl -fsSLo harden.sh https://github.com/N0deZ3r0/server-hardening/releases/download/v2026.10.14/harden.sh && echo "e95cb9394fb4e764e84880783f7daee35ce67483ed5fca0017f4a034b02ec35d  harden.sh" | sha256sum -c - && sudo install -m 755 harden.sh /usr/local/sbin/harden
 ```
 
 Это заменяет команды — `--check`, `--ping`, `--lang`, `--setup-telegram` — и не трогает
@@ -336,7 +339,8 @@ curl -fsSLo harden.sh https://github.com/N0deZ3r0/server-hardening/releases/down
 
 - **Вживую проверено на одной системе.** Ubuntu 24.04 на KVM прогнана от начала до конца
   несколько раз; остальные версии поддерживаются по устройству скрипта — проверки версий,
-  фильтрация алгоритмов, — а не прогоном на каждой.
+  фильтрация алгоритмов, — а не прогоном на каждой. На каждой поддерживаемой версии в CI
+  запускается только `--check`, в контейнере.
 - **Живые прогоны — на одном сервере** (Ubuntu 24.04, KVM): полная настройка с чистого
   образа, уведомления в Telegram, `--check`. Эти прогоны нашли девять вещей, которые пропустил
   CI, — ложный провал в проверке, служебные строки журнала о поиске ключа, принятые за
@@ -378,6 +382,7 @@ curl -fsSLo harden.sh https://github.com/N0deZ3r0/server-hardening/releases/down
   openssh или sudo. Если разработчик сменит ключ, CrowdSec будет пропущен, пока отпечаток
   здесь не обновят; CI проверяет его при каждом пуше.
 - **USB-накопители отключены** — на VPS это не важно, на физическом сервере заметно.
+  На физическом сервере итоговый отчёт об этом говорит и подсказывает, как вернуть.
 - **Советы Lynis, которые не приняты:** отдельные разделы `/home` `/tmp` `/var` (только
   при установке ОС), пароль на GRUB (мешает консоли хостера), AIDE и антивирусы (медленно,
   шумно, ложные срабатывания), принудительная смена паролей (современные рекомендации NIST
