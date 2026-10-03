@@ -2074,7 +2074,7 @@ main() {
   # locking them earlier would leave no way in if SSH had to be rolled back
   lock_other_users
   lock_root
-  install_self
+  install_self "$0"
   final_report
 }
 
