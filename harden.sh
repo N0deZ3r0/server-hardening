@@ -38,7 +38,7 @@ set -Eeuo pipefail
 # explicitly where it is written.
 umask 022
 
-HARDEN_VERSION="2026.10.19"
+HARDEN_VERSION="2026.10.20"
 LOG_FILE="/var/log/harden.log"
 REPORT_FILE="/root/harden-report.txt"
 BACKUP_DIR="/root/harden-backup-$(date +%Y%m%d-%H%M%S)"
@@ -1550,7 +1550,14 @@ setup_ssh() {
   if ! sshd -t; then rollback_ssh; die "$(T "Конфиг sshd не прошёл проверку — откатил." "sshd config failed the check — rolled back.")"; fi
   # shellcheck disable=SC2086
   restart_sshd $ports || { rollback_ssh; die "$(T "sshd не перезапустился — откатил." "sshd did not restart — rolled back.")"; }
-  ok "$(T "sshd слушает порты:" "sshd listens on ports:") $ports"
+  if [[ $ports == "$SSH_PORT" ]]; then
+    ok "$(T "sshd слушает порт" "sshd listens on port") $SSH_PORT"
+  else
+    # Said in so many words. Read back from the log, a bare "ports: 22 21576" looked as
+    # if the old port had been left open for good.
+    ok "$(T "sshd ВРЕМЕННО слушает и старый, и новый порт: $ports — старый закроется, как только ты подтвердишь вход на новый" \
+            "sshd TEMPORARILY listens on the old and the new port: $ports — the old one closes as soon as you confirm the login on the new one")"
+  fi
 
   # What sshd will really do, not what our file says: a line earlier in sshd_config, or a
   # drop-in that sorts before ours, wins ("first match wins")
@@ -1592,9 +1599,10 @@ setup_ssh() {
   # Stage 2: new port only
   write_sshd_config "$SSH_PORT"
   restart_sshd "$SSH_PORT" || { rollback_ssh; die "$(T "Ошибка при финальном перезапуске sshd — откатил." "Final sshd restart failed — rolled back.")"; }
-  local p
+  local p closed=""
   for p in $CURRENT_SSH_PORTS; do
     [[ $p == "$SSH_PORT" ]] && continue
+    closed+="$p "
     # every form the old port may have been opened in, not only the one this script uses
     ufw delete allow "$p/tcp" >/dev/null 2>&1 || true
     ufw delete allow "$p" >/dev/null 2>&1 || true
@@ -1603,6 +1611,7 @@ setup_ssh() {
   ufw delete allow OpenSSH >/dev/null 2>&1 || true
   ufw delete limit OpenSSH >/dev/null 2>&1 || true
   ok "$(T "SSH только на порту $SSH_PORT, только по ключу, root запрещён" "SSH on port $SSH_PORT only, keys only, root denied")"
+  [[ -z $closed ]] || ok "$(T "Старый порт закрыт и в sshd, и в firewall:" "The old port is closed, in sshd and in the firewall:") ${closed% }"
 }
 
 lock_root() {

@@ -5,7 +5,7 @@
 **One command turns a fresh Debian or Ubuntu VPS into a server that only lets in your key — and it will not close the old door until you have walked through the new one.**
 
 [![CI](https://github.com/N0deZ3r0/server-hardening/actions/workflows/ci.yml/badge.svg)](https://github.com/N0deZ3r0/server-hardening/actions/workflows/ci.yml)
-![version](https://img.shields.io/badge/version-2026.10.19-3b5bdb)
+![version](https://img.shields.io/badge/version-2026.10.20-3b5bdb)
 ![Debian](https://img.shields.io/badge/Debian-12%20%2F%2013-a80030)
 ![Ubuntu](https://img.shields.io/badge/Ubuntu-22.04%20%2F%2024.04%20%2F%2026.04-e95420)
 ![bash](https://img.shields.io/badge/bash-single%20file-2f9e44)
@@ -24,7 +24,7 @@ summary, can report to Telegram, and finishes with a Lynis audit. Later, `sudo h
 audits the server without changing anything. The interface is in English and Russian.
 
 ```bash
-curl -fsSLo harden.sh https://github.com/N0deZ3r0/server-hardening/releases/download/v2026.10.19/harden.sh && echo "f14137b036b75524009156e161c6fcf845fd58de8f945f1b5f75ae718e1d7d9c  harden.sh" | sha256sum -c - && sudo bash harden.sh
+curl -fsSLo harden.sh https://github.com/N0deZ3r0/server-hardening/releases/download/v2026.10.20/harden.sh && echo "b3d52ee79fa9e9c3ba98635527fa0cb075364c360b2b14cea58d980fb83a690c  harden.sh" | sha256sum -c - && sudo bash harden.sh
 ```
 
 The command downloads a fixed release and checks its SHA-256 before running it: if a single
@@ -264,7 +264,7 @@ sudo HARDEN_LANG=en NEW_USER=sysop SSH_PORT=42222 GITHUB_KEYS_USER=yourname \
 | OS | Debian 12/13, Ubuntu 22.04/24.04/26.04. RHEL, Alma, Rocky and CentOS are not supported |
 | Virtualisation | KVM, VMware, Hyper-V, Xen fully. LXC/OpenVZ partly — auditd, AppArmor and some sysctl values are skipped |
 | Architecture | x86_64 and ARM64 |
-| Run live | Ubuntu 24.04.5, KVM (OpenStack with cloud-init), 2 vCPU / 2 GB: a complete run from a clean image with version 2026.10.7 (Lynis 78 → 84, 86 after the reboot), and a complete run of 2026.10.18 on the same server after an earlier attempt had rolled back; see Limits |
+| Run live | Ubuntu 24.04.5, KVM (OpenStack with cloud-init), 2 vCPU / 2 GB: a complete run from a clean image with versions 2026.10.7 (Lynis 78 → 84, 86 after the reboot) and 2026.10.19; see Limits for the versions in between |
 | Run in CI | every push: the pieces of the setup on Ubuntu 24.04, and `--check` inside Debian 12/13 and Ubuntu 22.04/24.04/26.04 containers |
 
 **Cloud providers** (AWS, Oracle, Hetzner Cloud, GCP, Azure) have a firewall of their own
@@ -301,7 +301,7 @@ On a server that is already set up, put the newer script in place of the old one
 download and checksum, without running the setup:
 
 ```bash
-curl -fsSLo harden.sh https://github.com/N0deZ3r0/server-hardening/releases/download/v2026.10.19/harden.sh && echo "f14137b036b75524009156e161c6fcf845fd58de8f945f1b5f75ae718e1d7d9c  harden.sh" | sha256sum -c - && sudo install -m 755 harden.sh /usr/local/sbin/harden
+curl -fsSLo harden.sh https://github.com/N0deZ3r0/server-hardening/releases/download/v2026.10.20/harden.sh && echo "b3d52ee79fa9e9c3ba98635527fa0cb075364c360b2b14cea58d980fb83a690c  harden.sh" | sha256sum -c - && sudo install -m 755 harden.sh /usr/local/sbin/harden
 ```
 
 That replaces the commands — `--check`, `--ping`, `--lang`, `--setup-telegram` — and leaves
@@ -354,9 +354,11 @@ Knowingly open, with the reason for each:
   the unit as inactive freezes PID 1. The script now stops sshd before it switches the
   units, puts systemd's books straight if the state is already there, and reads success
   from the socket table. The last
-  complete run from a clean image was version 2026.10.7. Version 2026.10.18 then ran to
-  the end on the same server — but after the rollback, when sshd was no longer started
-  through the socket. **From a clean image, where it is, the fix is covered by CI only.**
+  complete run from a clean image before that was version 2026.10.7. Version 2026.10.19
+  has since run from a clean image to the end, socket-activated sshd included. That run
+  took the new order — sshd stopped first, units switched after — and never got into the
+  broken state, so the branch that repairs it when it is already there has still run
+  only in CI.
 - **Live runs are on one server** (Ubuntu 24.04, KVM): the full setup from a clean image,
   Telegram alerts, `--check`. Those runs found nine things CI had missed — a false failure
   in the audit, key-lookup log lines reported as logins, two alerts per connect from clients
