@@ -123,10 +123,9 @@ jobs:
           # The merged-login mark must survive the bare environment a systemd unit runs in
           sudo env -i /usr/local/sbin/harden-notify "probe ×2"
           grep -F 'probe ×2' tg.log
-          # This runner has never run sshd, so its journal holds no matching entry — the case
-          # in which `journalctl -f -n 0` prints only the last line of the first burst. The
-          # burst below is the first one the watcher sees; all of it has to get through.
-          test -z "$(sudo journalctl -o cat SYSLOG_IDENTIFIER=sshd SYSLOG_IDENTIFIER=sshd-session -n 1)"
+          # The burst below is the first one the watcher sees on this runner, whose journal
+          # has no sshd entry from the current boot. With `journalctl -f -n 0` only its last
+          # line came through (three runs in a row); all of it has to.
           # Every SSH login is reported, read from the journal — and only logins. The first
           # line is what sshd adds per key lookup under LogLevel VERBOSE; on a live server it
           # was reported as a login "from at", so it is replayed here exactly.

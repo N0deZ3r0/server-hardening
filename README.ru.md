@@ -25,7 +25,7 @@ CrowdSec, усиливает ядро, включает автообновлен
 Интерфейс — на русском и английском.
 
 ```bash
-curl -fsSLo harden.sh https://github.com/N0deZ3r0/server-hardening/releases/download/v2026.10.4/harden.sh && echo "464d90cdca3911007efa8ebdab5378bd988e6ff82bf81b8face64065d608801f  harden.sh" | sha256sum -c - && sudo bash harden.sh
+curl -fsSLo harden.sh https://github.com/N0deZ3r0/server-hardening/releases/download/v2026.10.4/harden.sh && echo "cad3bb001a7b8340c1a5f15a67dcc8d818e2493e59ae059f4da199c71b1b13da  harden.sh" | sha256sum -c - && sudo bash harden.sh
 ```
 
 Команда скачивает конкретный релиз и сверяет его SHA-256 до запуска: если отличается хоть
