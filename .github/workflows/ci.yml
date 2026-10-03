@@ -136,7 +136,7 @@ jobs:
           echo "$out" | grep -F 'sshd also listens outside its config: 22'
           # the switch: both ports, as in stage 1
           printf 'Port 22\nPort 2223\n' | sudo tee /etc/ssh/sshd_config.d/00-ci.conf >/dev/null
-          sudo bash -c 'source ./harden.sh; CURRENT_SSH_PORTS=22; restart_sshd 22 2223'
+          sudo bash -c 'source ./harden.sh; CURRENT_SSH_PORTS=22; restart_sshd 22 2223' 2>&1 | tee switch.out
           main=$(systemctl show -p MainPID --value ssh)
           test "$main" != 0 && test "$main" != "$stray"
           sudo ss -Hltnp 'sport = :22'   | grep -q "\"sshd\",pid=$main,"
@@ -144,7 +144,9 @@ jobs:
           if sudo kill -0 "$stray" 2>/dev/null; then echo "::error::the leftover sshd is still alive"; exit 1; fi
           # stage 2: one port, and nothing left on the old one
           printf 'Port 2223\n' | sudo tee /etc/ssh/sshd_config.d/00-ci.conf >/dev/null
-          sudo bash -c 'source ./harden.sh; CURRENT_SSH_PORTS=22; restart_sshd 2223'
+          sudo bash -c 'source ./harden.sh; CURRENT_SSH_PORTS=22; restart_sshd 2223' 2>&1 | tee -a switch.out
+          # a clean switch prints no error lines (finding no leftover used to trip the ERR trap)
+          if grep -q 'Error at line' switch.out; then echo "::error::spurious error output"; exit 1; fi
           test -z "$(sudo ss -Hltnp 'sport = :22')"
           out=$(sudo HARDEN_LANG=en bash harden.sh --check 2>&1) || true
           echo "$out" | grep -F 'sshd listens only on configured ports'
@@ -155,8 +157,7 @@ jobs:
           rc=0; sudo bash -c 'source ./harden.sh; CURRENT_SSH_PORTS=2223; restart_sshd 2223 2224' > switch.out 2>&1 || rc=$?
           cat switch.out
           if [ "$rc" = 0 ]; then sudo ss -Hltnp 'sport = :2224'; echo "::error::accepted an sshd that did not bind every port"; exit 1; fi
-          # and the normal case prints no error lines
-          if grep -q 'Error at line' switch.out; then echo "::error::spurious error output"; exit 1; fi
+          grep -q 'not bound to all of: 2223 2224' switch.out
           kill %1 2>/dev/null || true
           sudo rm -f /etc/ssh/sshd_config.d/00-ci.conf
           sudo systemctl stop ssh
