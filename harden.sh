@@ -1170,8 +1170,8 @@ ask_telegram() {  # sets TG_TOKEN / TG_CHAT_ID, or TELEGRAM=no if the admin give
     done
   fi
   tg_api "$token" sendMessage --data-urlencode "chat_id=$chat" \
-    --data-urlencode "text=✅ $(hostname): $(T "уведомления harden.sh подключаются" "harden.sh alerts are being set up")" -o /dev/null
-  if ask_yn "$(T "Тестовое сообщение пришло в Telegram?" "Did the test message arrive in Telegram?")" y; then
+    --data-urlencode "text=✅ $(hostname): $(T "тестовое сообщение harden.sh. Если вы его видите — ответьте y в окне сервера" "test message from harden.sh. If you can see it, answer y on the server")" -o /dev/null
+  if ask_yn "$(T "В Telegram пришло сообщение «тестовое сообщение harden.sh»?" "Did the message \"test message from harden.sh\" arrive in Telegram?")" y; then
     TG_TOKEN=$token; TG_CHAT_ID=$chat; TELEGRAM=yes
   else
     warn "$(T "Telegram пропущен. Позже: sudo harden --setup-telegram" "Telegram skipped. Later: sudo harden --setup-telegram")"
