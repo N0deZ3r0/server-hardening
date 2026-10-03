@@ -5,7 +5,7 @@
 **Одна команда превращает свежий VPS на Debian или Ubuntu в сервер, который пускает только по вашему ключу, — и не закроет старую дверь, пока вы не прошли через новую.**
 
 [![CI](https://github.com/N0deZ3r0/server-hardening/actions/workflows/ci.yml/badge.svg)](https://github.com/N0deZ3r0/server-hardening/actions/workflows/ci.yml)
-![version](https://img.shields.io/badge/version-2026.10.3-3b5bdb)
+![version](https://img.shields.io/badge/version-2026.10.4-3b5bdb)
 ![Debian](https://img.shields.io/badge/Debian-12%20%2F%2013-a80030)
 ![Ubuntu](https://img.shields.io/badge/Ubuntu-22.04%20%2F%2024.04%20%2F%2026.04-e95420)
 ![bash](https://img.shields.io/badge/bash-%D0%BE%D0%B4%D0%B8%D0%BD%20%D1%84%D0%B0%D0%B9%D0%BB-2f9e44)
@@ -25,7 +25,7 @@ CrowdSec, усиливает ядро, включает автообновлен
 Интерфейс — на русском и английском.
 
 ```bash
-curl -fsSLo harden.sh https://github.com/N0deZ3r0/server-hardening/releases/download/v2026.10.3/harden.sh && echo "3ff9022d600799f64e21f690587541cde1e3f1237cacb47232e374260a36b955  harden.sh" | sha256sum -c - && sudo bash harden.sh
+curl -fsSLo harden.sh https://github.com/N0deZ3r0/server-hardening/releases/download/v2026.10.4/harden.sh && echo "6628b89ef7de235144eff01d56b3fbf06d22b9a3ca907c020b4995a95d620ef8  harden.sh" | sha256sum -c - && sudo bash harden.sh
 ```
 
 Команда скачивает конкретный релиз и сверяет его SHA-256 до запуска: если отличается хоть
@@ -155,7 +155,7 @@ chat id, когда вы нажмёте Start в боте, и присылает
 
 | Уведомление | Когда |
 |---|---|
-| 🔑 вход по SSH | каждый успешный вход — пользователь, IP, тип и отпечаток ключа |
+| 🔑 вход по SSH | каждый успешный вход — пользователь, IP, тип и отпечаток ключа; соединения с теми же тремя в течение 3 с приходят одним сообщением с пометкой `×2` (MobaXterm, WinSCP и подобные открывают второе соединение для файлов) |
 | ❌ служба упала | `ssh`, `fail2ban`, `crowdsec`, его bouncer, `auditd` или `unattended-upgrades` завершились с ошибкой |
 | 🔄 сервер запущен | после каждой загрузки, с версией ядра |
 | 📊 ежедневная сводка | 09:00 по времени сервера: обновления, нужна ли перезагрузка, входы и баны за сутки, упавшие службы, диск и память |

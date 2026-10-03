@@ -5,7 +5,7 @@
 **One command turns a fresh Debian or Ubuntu VPS into a server that only lets in your key — and it will not close the old door until you have walked through the new one.**
 
 [![CI](https://github.com/N0deZ3r0/server-hardening/actions/workflows/ci.yml/badge.svg)](https://github.com/N0deZ3r0/server-hardening/actions/workflows/ci.yml)
-![version](https://img.shields.io/badge/version-2026.10.3-3b5bdb)
+![version](https://img.shields.io/badge/version-2026.10.4-3b5bdb)
 ![Debian](https://img.shields.io/badge/Debian-12%20%2F%2013-a80030)
 ![Ubuntu](https://img.shields.io/badge/Ubuntu-22.04%20%2F%2024.04%20%2F%2026.04-e95420)
 ![bash](https://img.shields.io/badge/bash-single%20file-2f9e44)
@@ -24,7 +24,7 @@ summary, can report to Telegram, and finishes with a Lynis audit. Later, `sudo h
 audits the server without changing anything. The interface is in English and Russian.
 
 ```bash
-curl -fsSLo harden.sh https://github.com/N0deZ3r0/server-hardening/releases/download/v2026.10.3/harden.sh && echo "3ff9022d600799f64e21f690587541cde1e3f1237cacb47232e374260a36b955  harden.sh" | sha256sum -c - && sudo bash harden.sh
+curl -fsSLo harden.sh https://github.com/N0deZ3r0/server-hardening/releases/download/v2026.10.4/harden.sh && echo "6628b89ef7de235144eff01d56b3fbf06d22b9a3ca907c020b4995a95d620ef8  harden.sh" | sha256sum -c - && sudo bash harden.sh
 ```
 
 The command downloads a fixed release and checks its SHA-256 before running it: if a single
@@ -153,7 +153,7 @@ anything is installed.
 
 | Alert | When |
 |---|---|
-| 🔑 SSH login | every accepted login — user, IP, key type and fingerprint |
+| 🔑 SSH login | every accepted login — user, IP, key type and fingerprint; connections with the same three within 3 s arrive as one message marked `×2` (MobaXterm, WinSCP and the like open a second connection for files) |
 | ❌ service failed | `ssh`, `fail2ban`, `crowdsec`, its bouncer, `auditd` or `unattended-upgrades` ends in a failed state |
 | 🔄 server started | after every boot, with the running kernel |
 | 📊 daily report | 09:00 server time: pending updates, reboot required, logins and bans in 24 h, failed services, disk and RAM |

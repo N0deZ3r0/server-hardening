@@ -30,7 +30,7 @@
 # =============================================================================
 set -Eeuo pipefail
 
-HARDEN_VERSION="2026.10.3"
+HARDEN_VERSION="2026.10.4"
 LOG_FILE="/var/log/harden.log"
 REPORT_FILE="/root/harden-report.txt"
 BACKUP_DIR="/root/harden-backup-$(date +%Y%m%d-%H%M%S)"
@@ -1223,18 +1223,40 @@ NOTIFY_EOF
 # Follows sshd in the journal and sends a Telegram message for every accepted login
 # (installed by harden.sh). Reading the journal means no PAM or sshd config is edited.
 set -u
+# Logins by the same user, from the same address, with the same key, within 3 seconds are
+# one event to a person: MobaXterm, WinSCP, Termius and the like open a second connection
+# for file transfer. They are sent as one message marked ×2 rather than as two alerts.
+sig=""; msg=""; n=0; t0=0
+flush() {
+  [ -n "$sig" ] || return 0
+  if [ "$n" -gt 1 ]; then /usr/local/sbin/harden-notify "$msg ×$n" &
+  else /usr/local/sbin/harden-notify "$msg" & fi
+  sig=""; n=0
+}
 journalctl -f -n 0 -o cat SYSLOG_IDENTIFIER=sshd SYSLOG_IDENTIFIER=sshd-session 2>/dev/null |
-while IFS= read -r line; do
-  case $line in
-    # Accepted <method> for <user> from <ip> port <port> ssh2[: <type> <fingerprint>]
-    # The full shape is required: with LogLevel VERBOSE sshd also logs
-    # "Accepted key ED25519 SHA256:… found at /home/…/authorized_keys:1" for every key it
-    # looks up, which is not a login (seen live as "login: SHA256:… from at").
-    "Accepted "*" for "*" from "*" port "*)
-      read -r -a f <<<"$line"
-      /usr/local/sbin/harden-notify "🔑 SSH login: ${f[3]:-?} from ${f[5]:-?} (${f[1]:-?}${f[9]:+, ${f[9]}}${f[10]:+ ${f[10]}})" &
-      ;;
-  esac
+while :; do
+  if IFS= read -r -t 1 line; then
+    case $line in
+      # Accepted <method> for <user> from <ip> port <port> ssh2[: <type> <fingerprint>]
+      # The full shape is required: with LogLevel VERBOSE sshd also logs
+      # "Accepted key ED25519 SHA256:… found at /home/…/authorized_keys:1" for every key it
+      # looks up, which is not a login (seen live as "login: SHA256:… from at").
+      "Accepted "*" for "*" from "*" port "*)
+        read -r -a f <<<"$line"
+        s="${f[3]:-?} ${f[5]:-?} ${f[10]:-}"
+        if [ "$s" = "$sig" ]; then
+          n=$((n + 1))
+        else
+          flush    # a different user, address or key is never merged or delayed
+          sig=$s; n=1; t0=$SECONDS
+          msg="🔑 SSH login: ${f[3]:-?} from ${f[5]:-?} (${f[1]:-?}${f[9]:+, ${f[9]}}${f[10]:+ ${f[10]}})"
+        fi
+        ;;
+    esac
+  elif [ $? -le 128 ]; then
+    flush; break    # end of input (journalctl stopped); above 128 is just the read timeout
+  fi
+  if [ -n "$sig" ] && [ $((SECONDS - t0)) -ge 3 ]; then flush; fi
 done
 WATCH_EOF
 

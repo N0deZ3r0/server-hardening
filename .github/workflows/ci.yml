@@ -124,14 +124,19 @@ jobs:
           systemctl is-active harden-login-watch
           sleep 2
           logger -t sshd "Accepted key ED25519 SHA256:ci found at /home/alex/.ssh/authorized_keys:1"
+          # Two connections in the same second (terminal + file panel of one client) are one
+          # alert marked x2; a login from another address is its own alert.
           logger -t sshd "Accepted publickey for alex from 203.0.113.9 port 5555 ssh2: ED25519 SHA256:ci"
-          for _ in $(seq 20); do grep -q '203.0.113.9' tg.log && break; sleep 1; done
+          logger -t sshd "Accepted publickey for alex from 203.0.113.9 port 5556 ssh2: ED25519 SHA256:ci"
+          logger -t sshd "Accepted publickey for alex from 203.0.113.10 port 6000 ssh2: ED25519 SHA256:ci"
+          for _ in $(seq 20); do grep -q '203.0.113.10' tg.log && break; sleep 1; done
           sleep 2
-          grep -F 'SSH login: alex from 203.0.113.9 (publickey, ED25519 SHA256:ci)' tg.log
-          test "$(grep -c 'SSH login: ' tg.log)" = 1
-          # The daily report counts the same way
+          grep -F 'SSH login: alex from 203.0.113.9 (publickey, ED25519 SHA256:ci) ×2' tg.log
+          grep -F 'SSH login: alex from 203.0.113.10 (publickey, ED25519 SHA256:ci)"' tg.log
+          test "$(grep -c 'SSH login: ' tg.log)" = 2
+          # The daily report counts connections, and only logins
           sudo /usr/local/sbin/harden-daily-report
-          grep -F 'Daily report' tg.log | grep -F 'SSH logins (24 h): 1 — alex@203.0.113.9×1'
+          grep -F 'Daily report' tg.log | grep -F 'SSH logins (24 h): 3 — alex@203.0.113.9×2, alex@203.0.113.10×1'
           # A failing unit really sends the alert, through the same template the drop-ins use
           systemctl show ssh.service -p OnFailure | grep -q 'harden-alert@ssh.service'
           sudo systemd-run --quiet --unit=ci-fail --property=OnFailure=harden-alert@ci-fail.service.service /bin/false || true
