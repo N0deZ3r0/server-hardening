@@ -5,7 +5,7 @@
 **One command turns a fresh Debian or Ubuntu VPS into a server that only lets in your key — and it will not close the old door until you have walked through the new one.**
 
 [![CI](https://github.com/N0deZ3r0/server-hardening/actions/workflows/ci.yml/badge.svg)](https://github.com/N0deZ3r0/server-hardening/actions/workflows/ci.yml)
-![version](https://img.shields.io/badge/version-2026.10.21-3b5bdb)
+![version](https://img.shields.io/badge/version-2026.10.22-3b5bdb)
 ![Debian](https://img.shields.io/badge/Debian-12%20%2F%2013-a80030)
 ![Ubuntu](https://img.shields.io/badge/Ubuntu-22.04%20%2F%2024.04%20%2F%2026.04-e95420)
 ![bash](https://img.shields.io/badge/bash-single%20file-2f9e44)
@@ -24,7 +24,7 @@ summary, can report to Telegram, and finishes with a Lynis audit. Later, `sudo h
 audits the server without changing anything. The interface is in English and Russian.
 
 ```bash
-curl -fsSLo harden.sh https://github.com/N0deZ3r0/server-hardening/releases/download/v2026.10.21/harden.sh && echo "c78a77093ab42099f254140f18652ed4464d1efcea16c095b07b4562ca6ba825  harden.sh" | sha256sum -c - && sudo bash harden.sh
+curl -fsSLo harden.sh https://github.com/N0deZ3r0/server-hardening/releases/download/v2026.10.22/harden.sh && echo "6617af889051804999ed390626ebf0d35006e24942f3de6de3168733f0b113a1  harden.sh" | sha256sum -c - && sudo bash harden.sh
 ```
 
 The command downloads a fixed release and checks its SHA-256 before running it: if a single
@@ -265,7 +265,7 @@ sudo HARDEN_LANG=en NEW_USER=sysop SSH_PORT=42222 GITHUB_KEYS_USER=yourname \
 | Virtualisation | KVM, VMware, Hyper-V, Xen fully. LXC/OpenVZ partly — auditd, AppArmor and some sysctl values are skipped |
 | Architecture | x86_64 and ARM64 |
 | Run live | Ubuntu 24.04.5, KVM (OpenStack with cloud-init), 2 vCPU / 2 GB: a complete run from a clean image with versions 2026.10.7 (Lynis 78 → 84, 86 after the reboot) and 2026.10.19; see Limits for the versions in between |
-| Run in CI | every push: the pieces of the setup on Ubuntu 24.04, and `--check` inside Debian 12/13 and Ubuntu 22.04/24.04/26.04 containers |
+| Run in CI | every push: the whole setup on a virtual machine of each of the five releases — a cloud image boots, the questions are answered on a terminal, the login is tried from outside, then a reboot, `--refresh`, a second run and `--undo`; plus the pieces on Ubuntu 24.04 and `--check` in containers |
 
 **Cloud providers** (AWS, Oracle, Hetzner Cloud, GCP, Azure) have a firewall of their own
 in the control panel. Open the new SSH port there *before* confirming the login. If you
@@ -288,6 +288,9 @@ sudo harden --check                    # audit, nothing is changed
 sudo harden --setup-telegram           # add Telegram alerts
 sudo harden --ping off                 # stop answering ping (--ping on to resume)
 sudo harden --lang ru                  # change the remembered language (en or ru)
+sudo harden --refresh                  # apply a newer version's settings, no questions
+sudo harden --answers                  # the command that repeats this setup
+sudo harden --undo                     # take the setup back from the backup
 ```
 
 To undo a part: SSH settings live in `/etc/ssh/sshd_config.d/00-hardening.conf`, kernel
@@ -297,19 +300,36 @@ settings in `/etc/sysctl.d/99-hardening.conf` and `99-protect-links.conf`, and t
 
 ## Updating
 
-On a server that is already set up, put the newer script in place of the old one — the same
-download and checksum, without running the setup:
+On a server that is already set up, download the newer script and let it apply its
+settings — the same download and checksum, then `--refresh` instead of the setup:
 
 ```bash
-curl -fsSLo harden.sh https://github.com/N0deZ3r0/server-hardening/releases/download/v2026.10.21/harden.sh && echo "c78a77093ab42099f254140f18652ed4464d1efcea16c095b07b4562ca6ba825  harden.sh" | sha256sum -c - && sudo install -m 755 harden.sh /usr/local/sbin/harden
+curl -fsSLo harden.sh https://github.com/N0deZ3r0/server-hardening/releases/download/v2026.10.22/harden.sh && echo "6617af889051804999ed390626ebf0d35006e24942f3de6de3168733f0b113a1  harden.sh" | sha256sum -c - && sudo bash harden.sh --refresh
 ```
 
-That replaces the commands — `--check`, `--ping`, `--lang`, `--setup-telegram` — and leaves
-the server's settings as they are. What a newer version would set differently shows up in
-`sudo harden --check`. Two parts have commands of their own: `sudo harden --setup-telegram`
-(answer yes to keep the saved bot) replaces the alert helpers, `sudo harden --install-status`
-the login summary. Kernel, SSH and firewall settings are written only by the full setup;
-there is no separate command that re-applies them yet.
+`--refresh` asks nothing. It writes the kernel settings, audit rules, auto-update settings,
+fail2ban jails, login summary and Telegram helpers the way this version does, and replaces
+the installed `harden`. Accounts, SSH and the firewall are left as they are: those are the
+parts where a mistake costs access, and they change only in the full setup, with its login
+check. `sudo harden --check` afterwards shows what still differs.
+
+## Repeating a setup, and taking it back
+
+The answers of a setup are kept on the server in `/etc/harden/setup.conf` — no secrets: the
+bot token is elsewhere, the password is stored nowhere. The final report prints the command
+that repeats the setup with the same answers, and `sudo harden --answers` prints it again.
+Keep it off the server if you reinstall often. The password for the new user, the bot
+token and the login check are still asked.
+
+`sudo harden --undo` takes the setup back from the oldest backup in `/root/harden-backup-*`,
+the one made before the first run. SSH (port and logins), the firewall, root, the locked
+accounts and the system files the setup replaced come back; every file it added is removed.
+Installed packages and the user it created stay; kernel settings return after a reboot.
+fail2ban is stopped, unless it had a configuration of its own before the setup: on the
+distribution's defaults it has no exception for your address and bans on what is already in
+the log. It
+asks before it starts, and the session it runs in stays up — try the old way in before you
+close it.
 
 ## Releases and verification
 
@@ -341,9 +361,14 @@ The newest unreleased code is on `main` —
 
 Knowingly open, with the reason for each:
 
-- **Live-tested on one system.** Ubuntu 24.04 on KVM ran end to end several times; the
-  other versions are supported by design — version checks, algorithm filtering — not by a
-  run on each. Only `--check` is run on every supported release, in a container in CI.
+- **Run by a person on one system, by CI on five.** A person has run the setup only on
+  Ubuntu 24.04 (KVM, one provider). CI runs it whole on a virtual machine of every
+  supported release ([tools/e2e.py](tools/e2e.py)). The first time it did, it found that
+  the setup had never worked on Ubuntu 26.04 — sudo there is sudo-rs, which does not know
+  one of the settings written — and had stopped working on Debian 12 in 2026.10.15,
+  on a `cp` option that is broken in that release's coreutils. Both had been listed as
+  supported. What the VM runs leave out: the move into tmux, Telegram, Lynis, IPv6, and
+  whatever a real provider's image does differently from the stock cloud image.
 - **Versions 2026.10.8 to 2026.10.17 could not finish a setup on an Ubuntu 24.04 cloud
   image.** They stopped at the SSH switch and rolled back: access was never lost, and the
   setup was never completed. systemd had the SSH unit down as inactive while its listener
