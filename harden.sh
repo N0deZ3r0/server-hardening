@@ -1072,7 +1072,8 @@ kill_sshd_listeners_on() {  # kill_sshd_listeners_on port...
   local p pid main
   main=$(systemctl show -p MainPID --value "$(ssh_service)" 2>/dev/null || true)
   for p in "$@"; do
-    for pid in $(ss -Hltnp "sport = :$p" 2>/dev/null | grep -oE '"sshd",pid=[0-9]+' | grep -oE '[0-9]+$' | sort -u); do
+    # || true: finding nothing is the normal case, not an error for the ERR trap to report
+    for pid in $(ss -Hltnp "sport = :$p" 2>/dev/null | grep -oE '"sshd",pid=[0-9]+' | grep -oE '[0-9]+$' | sort -u || true); do
       [[ $pid == "${main:-0}" ]] && continue
       kill "$pid" 2>/dev/null \
         && info "$(T "Остановлен оставшийся sshd (pid $pid) на порту $p" "Stopped a leftover sshd (pid $pid) on port $p")"

@@ -149,10 +149,14 @@ jobs:
           out=$(sudo HARDEN_LANG=en bash harden.sh --check 2>&1) || true
           echo "$out" | grep -F 'sshd listens only on configured ports'
           # a daemon that cannot bind what it was asked to is reported, not accepted
-          python3 -m http.server 2224 --bind 0.0.0.0 >/dev/null 2>&1 &
-          sleep 1
+          python3 -m http.server 2224 --bind :: >/dev/null 2>&1 &   # dual-stack: takes 2224 for IPv4 and IPv6
+          for _ in 1 2 3 4 5 6 7 8 9 10; do ss -Hltn 'sport = :2224' | grep -q . && break; sleep 0.5; done
           printf 'Port 2223\nPort 2224\n' | sudo tee /etc/ssh/sshd_config.d/00-ci.conf >/dev/null
-          if sudo bash -c 'source ./harden.sh; CURRENT_SSH_PORTS=2223; restart_sshd 2223 2224'; then echo "::error::accepted an sshd that did not bind every port"; exit 1; fi
+          rc=0; sudo bash -c 'source ./harden.sh; CURRENT_SSH_PORTS=2223; restart_sshd 2223 2224' > switch.out 2>&1 || rc=$?
+          cat switch.out
+          if [ "$rc" = 0 ]; then sudo ss -Hltnp 'sport = :2224'; echo "::error::accepted an sshd that did not bind every port"; exit 1; fi
+          # and the normal case prints no error lines
+          if grep -q 'Error at line' switch.out; then echo "::error::spurious error output"; exit 1; fi
           kill %1 2>/dev/null || true
           sudo rm -f /etc/ssh/sshd_config.d/00-ci.conf
           sudo systemctl stop ssh
