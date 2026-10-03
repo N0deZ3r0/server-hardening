@@ -123,23 +123,10 @@ jobs:
           # The merged-login mark must survive the bare environment a systemd unit runs in
           sudo env -i /usr/local/sbin/harden-notify "probe ×2"
           grep -F 'probe ×2' tg.log
-          # DEBUG (temporary): who loses lines — journalctl or bash read -t?
-          sudo systemctl stop harden-login-watch
-          sudo journalctl -f -n 0 -o cat SYSLOG_IDENTIFIER=sshd > j_plain.out 2>&1 &
-          sudo bash -c 'journalctl -f -n 0 -o cat SYSLOG_IDENTIFIER=sshd | while IFS= read -r l; do echo "R: $l"; done' > j_read.out 2>&1 &
-          sudo bash -c 'journalctl -f -n 0 -o cat SYSLOG_IDENTIFIER=sshd | while :; do if IFS= read -r -t 1 l; then echo "T: $l"; elif [ $? -le 128 ]; then break; fi; done' > j_readt.out 2>&1 &
-          sleep 3
-          for n in 1 2 3 4; do logger -t sshd "dbg line $n"; done
-          sleep 4
-          sudo pkill journalctl || true
-          set +x
-          echo "=== journalctl alone:"; cat j_plain.out
-          echo "=== while read:"; cat j_read.out
-          echo "=== while read -t 1:"; cat j_readt.out
-          echo "=== feed without journalctl, read -t 1:"
-          { sleep 2; printf '%s\n' a1 a2 a3 a4; sleep 2; } | while :; do if IFS= read -r -t 1 l; then echo "T: $l"; elif [ $? -le 128 ]; then break; fi; done
-          set -x
-          sudo systemctl start harden-login-watch
+          # This runner has never run sshd, so its journal holds no matching entry — the case
+          # in which `journalctl -f -n 0` prints only the last line of the first burst. The
+          # burst below is the first one the watcher sees; all of it has to get through.
+          test -z "$(sudo journalctl -o cat SYSLOG_IDENTIFIER=sshd SYSLOG_IDENTIFIER=sshd-session -n 1)"
           # Every SSH login is reported, read from the journal — and only logins. The first
           # line is what sshd adds per key lookup under LogLevel VERBOSE; on a live server it
           # was reported as a login "from at", so it is replayed here exactly.

@@ -1233,7 +1233,10 @@ flush() {
   else /usr/local/sbin/harden-notify "$msg" & fi
   sig=""; n=0
 }
-journalctl -f -n 0 -o cat SYSLOG_IDENTIFIER=sshd SYSLOG_IDENTIFIER=sshd-session 2>/dev/null |
+# --since now, not -n 0: with -n 0 journalctl has no position until a matching entry
+# exists, and on a machine whose journal has none yet it prints only the last line of the
+# first burst — the first login after install would go unreported (measured in CI).
+journalctl -f --since now -o cat SYSLOG_IDENTIFIER=sshd SYSLOG_IDENTIFIER=sshd-session 2>/dev/null |
 while :; do
   if IFS= read -r -t 1 line; then
     case $line in
