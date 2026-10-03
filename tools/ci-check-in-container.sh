@@ -16,6 +16,16 @@ apt-get install -y -q --no-install-recommends openssh-server iproute2 procps uti
 . /etc/os-release
 echo "== $PRETTY_NAME"
 
+# Every package the setup installs has to exist on this release: a renamed or dropped
+# package would otherwise stop a real setup half-way.
+pk=$(bash -c "source '$here/harden.sh'; setup_packages" | xargs)
+# shellcheck disable=SC2086  # one argument per package
+if ! sim=$(apt-get install -s --no-install-recommends $pk 2>&1); then
+  printf '%s\n' "$sim" | tail -5
+  fail "a package the setup installs is not available on $PRETTY_NAME"
+fi
+echo "packages available: $pk"
+
 rm -rf /run/sshd
 if unshare --mount true 2>/dev/null; then
   fail "this container allows mount namespaces — the test would prove nothing"

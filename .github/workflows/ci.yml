@@ -120,6 +120,78 @@ jobs:
           out=$(sudo HARDEN_LANG=en bash harden.sh --check 2>&1) || true
           printf '%s\n' "$out" | grep -F 'New package configs not reviewed'
           sudo rm /etc/ci-harden.conf.dpkg-dist
+          # UFW is not the only firewall: a server that drops incoming traffic by other
+          # means is not "unprotected". And a NOPASSWD rule for a group counts as much as
+          # one for a user — it used to be skipped.
+          printf '%s\n' "$out" | grep -F 'UFW firewall is off'
+          sudo apt-get update -q >/dev/null 2>&1 || true
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -q nftables >/dev/null
+          echo '%cigroup ALL=(ALL) NOPASSWD: ALL' | sudo tee /etc/sudoers.d/ci-group >/dev/null
+          sudo chmod 440 /etc/sudoers.d/ci-group
+          sudo nft -f - <<'NFT'
+          table inet citest {
+            chain input {
+              type filter hook input priority 0; policy drop;
+              iif "lo" accept
+              ct state established,related accept
+            }
+          }
+          NFT
+          out=$(sudo HARDEN_LANG=en bash harden.sh --check 2>&1) || true
+          sudo nft delete table inet citest
+          sudo rm /etc/sudoers.d/ci-group
+          printf '%s\n' "$out" | grep -F 'filtered by nftables'
+          printf '%s\n' "$out" | grep -F 'Passwordless sudo' | grep -F '%cigroup'
+
+      - name: Paths a live run never took — re-run, console-first, a cloud-init that never runs
+        run: |
+          set -x
+          # `sudo harden` is the installed copy: installing it onto itself has to be a
+          # no-op, not the error that used to end a re-run right before the final report
+          sudo install -m 755 harden.sh /usr/local/sbin/harden
+          sudo bash -c 'source ./harden.sh; install_self /usr/local/sbin/harden'
+          sudo rm /usr/local/sbin/harden
+          sudo bash -c 'source ./harden.sh; install_self ./harden.sh'
+          sudo test -x /usr/local/sbin/harden
+          sudo rm /usr/local/sbin/harden
+          # sshd idle and /run/sshd gone (Ubuntu 24.04 from the console): finding the
+          # current port used to end the run under pipefail
+          sudo systemctl stop ssh.socket ssh.service 2>/dev/null || true
+          sudo rm -rf /run/sshd
+          ports=$(sudo bash -c 'source ./harden.sh; current_ssh_ports')
+          echo "ports: $ports"
+          test -n "$ports"
+          # no working sshd at all: 22 is assumed and nothing fails
+          mkdir -p nosshd && printf '#!/bin/sh\nexit 127\n' > nosshd/sshd && chmod +x nosshd/sshd
+          test "$(sudo env "PATH=$PWD/nosshd:$PATH" bash -c 'source ./harden.sh; current_ssh_ports')" = 22
+          sudo rm -rf /run/sshd
+          # a cloud-init that is installed but never runs is not waited for
+          mkdir -p stub
+          printf '#!/bin/sh\necho "status: not started"\n' > stub/cloud-init
+          printf '#!/bin/sh\necho running\n' > stub/systemctl
+          chmod +x stub/*
+          if env "PATH=$PWD/stub:$PATH" bash -c 'source ./harden.sh; cloud_init_busy'; then
+            echo "::error::would wait for a cloud-init that never runs"; exit 1
+          fi
+          printf '#!/bin/sh\necho starting\nexit 1\n' > stub/systemctl      # still booting: wait
+          env "PATH=$PWD/stub:$PATH" bash -c 'source ./harden.sh; cloud_init_busy'
+          printf '#!/bin/sh\necho "status: running"\n' > stub/cloud-init
+          env "PATH=$PWD/stub:$PATH" bash -c 'source ./harden.sh; cloud_init_busy'
+          printf '#!/bin/sh\necho "status: done"\n' > stub/cloud-init
+          if env "PATH=$PWD/stub:$PATH" bash -c 'source ./harden.sh; cloud_init_busy'; then
+            echo "::error::waits for a cloud-init that has finished"; exit 1
+          fi
+          # a key file that does not end in a newline: the new key goes on a line of its own
+          printf 'ssh-ed25519 AAAAold old' > ak.txt
+          printf 'ssh-ed25519 AAAAnew new\nssh-ed25519 AAAAold old\n' > new.txt
+          bash -c 'source ./harden.sh; add_keys new.txt ak.txt'
+          cat ak.txt
+          test "$(wc -l < ak.txt)" = 2
+          grep -qx 'ssh-ed25519 AAAAold old' ak.txt
+          grep -qx 'ssh-ed25519 AAAAnew new' ak.txt
+          # nobody is not an account to hand sudo to
+          if bash -c 'source ./harden.sh; valid_user nobody'; then echo "::error::accepted nobody"; exit 1; fi
+          bash -c 'source ./harden.sh; valid_user sysop'
 
       - name: The language is remembered, and --check never writes it
         run: |
@@ -429,6 +501,8 @@ jobs:
           echo "$out"
           echo "$out" | grep -q 'SYSTEM STATUS'
           echo "$out" | grep -q 'CPU:'
+          # numbers read from /proc/meminfo, not from the translated output of `free`
+          echo "$out" | grep -qE 'RAM:.* [0-9]+ MB total, [0-9]+ MB free'
           # Installed services are listed whatever state they are in (the runner has both
           # units: docker running, ssh not)
           echo "$out" | grep -qE '^ ?docker +.*✓'
@@ -564,6 +638,26 @@ jobs:
           sudo test ! -e /etc/fail2ban/jail.local
           sudo grep -q 'port     = 10022' /root/ci-f2b2/jail.local
           sudo fail2ban-client status sshd
+
+      - name: Firewall — a refused extra port is skipped, a new admin address still precedes the limit
+        run: |
+          sudo ufw --force reset >/dev/null
+          # 8000:8100 has no protocol and 70000 is not a port: UFW refuses both, and its
+          # refusal used to end the setup at this point
+          sudo bash -c 'source ./harden.sh; CURRENT_SSH_PORTS=22; SSH_PORT=2222; ADMIN_IP=203.0.113.5; EXTRA_PORTS=80,8000:8100,70000,443/tcp; setup_firewall' | tee fw.out
+          test "$(grep -c 'Port skipped' fw.out)" = 2
+          sudo ufw status numbered | tee fw1.txt
+          grep -E '^\[ *[0-9]+\] 80 ' fw1.txt
+          grep -E '^\[ *[0-9]+\] 443/tcp ' fw1.txt
+          # the setup again from another address: its rule has to come before the limit
+          # rule that is already there, or UFW never reaches it
+          sudo bash -c 'source ./harden.sh; CURRENT_SSH_PORTS=22; SSH_PORT=2222; ADMIN_IP=203.0.113.9; EXTRA_PORTS=; setup_firewall'
+          sudo ufw status numbered | tee fw2.txt
+          admin=$(grep -F '203.0.113.9' fw2.txt | head -1 | sed -E 's/^\[ *([0-9]+)\].*/\1/')
+          limit=$(grep -E '2222/tcp +LIMIT IN +Anywhere' fw2.txt | head -1 | sed -E 's/^\[ *([0-9]+)\].*/\1/')
+          echo "admin rule #$admin, limit rule #$limit"
+          test "$admin" -lt "$limit"
+          sudo ufw --force disable
 
   containers:
     name: --check in a container (${{ matrix.image }})

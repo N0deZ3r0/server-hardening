@@ -70,6 +70,12 @@ warn_box() {
   echo "╚${bar}╝${C_0}"
 }
 
+# Is there a terminal to ask on? `[[ -r /dev/tty ]]` is true without one too — the device
+# node is always readable — so only opening it tells.
+have_tty() { { : </dev/tty; } 2>/dev/null; }
+# Not every account lives in /home/<name> (a reused existing user may not)
+home_of() { getent passwd "$1" 2>/dev/null | cut -d: -f6 || true; }
+
 trap 'echo "${C_R}[✗] $(T "Ошибка в строке" "Error at line") $LINENO: $BASH_COMMAND${C_0}" >&2
       echo "$(T "Бэкап конфигов" "Config backup"): $BACKUP_DIR, $(T "лог" "log"): $LOG_FILE" >&2' ERR
 
@@ -141,7 +147,7 @@ choose_language() {
   fi
   local d=1
   [[ "${LC_ALL:-}${LANG:-}" == *ru* ]] && d=2
-  if [[ -r /dev/tty ]]; then
+  if have_tty; then
     read -r -p "Language / Язык:  1) English  2) Русский [$d]: " REPLY </dev/tty || REPLY=$d
     case ${REPLY:-$d} in 2|ru|RU|р*|Р*) UI=ru ;; *) UI=en ;; esac
   else
@@ -181,8 +187,31 @@ relaunch_in_tmux() {
   exec tmux new-session -A -s harden bash -c "$inner"
 }
 
+# cloud-init says "not started" both before it has begun and on a machine where it is
+# installed but never runs. The second case used to be waited for for 45 minutes and then
+# given up on, so "not started" counts only while the machine is still booting.
+cloud_init_busy() {
+  command -v cloud-init >/dev/null || return 1
+  local st
+  st=$(cloud-init status 2>/dev/null || true)
+  grep -q 'running' <<<"$st" && return 0
+  grep -q 'not started' <<<"$st" || return 1
+  [[ $(systemctl is-system-running 2>/dev/null || true) =~ ^(initializing|starting)$ ]]
+}
+
+# The ports sshd is configured for now. sshd -T needs /run/sshd, which is missing while
+# sshd is socket-activated and has not been started yet (Ubuntu 24.04 from the provider's
+# console). Under pipefail a failing sshd -T used to end the whole run right here instead
+# of falling back to 22.
+current_ssh_ports() {
+  local ports
+  [[ -d /run/sshd ]] || mkdir -p /run/sshd 2>/dev/null || true
+  ports=$(sshd -T 2>/dev/null | awk '$1=="port"{print $2}' | sort -u | xargs || true)
+  echo "${ports:-22}"
+}
+
 preflight() {
-  [[ -r /dev/tty ]] || die "$(T "Нужен интерактивный терминал (запускай в SSH-сессии)." "An interactive terminal is required (run it in an SSH session).")"
+  have_tty || die "$(T "Нужен интерактивный терминал (запускай в SSH-сессии)." "An interactive terminal is required (run it in an SSH session).")"
   . /etc/os-release
   case "${ID:-}" in
     debian|ubuntu) ;;
@@ -194,7 +223,7 @@ preflight() {
   systemd-detect-virt -cq 2>/dev/null && IS_CONTAINER=yes
 
   mkdir -p "$BACKUP_DIR"
-  cp -a /etc/ssh "$BACKUP_DIR/ssh"
+  if [[ -d /etc/ssh ]]; then cp -a /etc/ssh "$BACKUP_DIR/ssh"; fi
   # The other files this script replaces or edits in place, so that "the originals are
   # in the backup" holds for each of them (jail.local and hosts are copied where they
   # are handled)
@@ -204,6 +233,8 @@ preflight() {
     if [[ -e $bf ]]; then cp -a --parents "$bf" "$BACKUP_DIR/"; fi
   done
   [[ -d /etc/ufw ]] && cp -a /etc/ufw "$BACKUP_DIR/ufw"
+  # The log names the user, the SSH port and the whitelisted address: root only
+  touch "$LOG_FILE"; chmod 600 "$LOG_FILE"
   exec > >(tee -a "$LOG_FILE") 2>&1
 
   echo "${C_BOLD}Server hardening v$HARDEN_VERSION — $OS_NAME (virt: $VIRT)${C_0}"
@@ -214,15 +245,15 @@ preflight() {
   # The provider's cloud-init may run a full apt upgrade (GRUB and kernel included) and
   # restart SSH for 5–20 minutes. Interrupting or rebooting then can leave GRUB half
   # installed and the server unbootable — seen live, so we wait for it to finish.
-  if command -v cloud-init >/dev/null && cloud-init status 2>/dev/null | grep -qE 'running|not started'; then
+  if cloud_init_busy; then
     info "$(T "Хостер ещё делает первичную настройку (cloud-init: обновление системы, загрузчик, SSH)." \
               "The provider is still doing first-boot setup (cloud-init: upgrades, bootloader, SSH).")"
     info "$(T "Жду завершения — это не зависание. Ctrl+C и перезагрузку НЕ делай." \
               "Waiting for it to finish — this is not a hang. Do NOT press Ctrl+C or reboot.")"
     local waited=0 detail
-    while cloud-init status 2>/dev/null | grep -qE 'running|not started'; do
+    while cloud_init_busy; do
       (( waited >= 2700 )) && die "$(T "cloud-init не завершился за 45 минут. Проверь: cloud-init status --long" "cloud-init did not finish in 45 minutes. Check: cloud-init status --long")"
-      detail=$(tail -n 1 /var/log/cloud-init-output.log 2>/dev/null | tr -cd '[:print:]' | cut -c1-60)
+      detail=$(tail -n 1 /var/log/cloud-init-output.log 2>/dev/null | tr -cd '[:print:]' | cut -c1-60 || true)
       printf '\r    %2d:%02d  %-62s' $((waited / 60)) $((waited % 60)) "$detail"
       sleep 5; waited=$((waited + 5))
     done
@@ -231,8 +262,7 @@ preflight() {
   fi
 
   # Current SSH ports — kept open until the new port is proven to work
-  CURRENT_SSH_PORTS=$(sshd -T 2>/dev/null | awk '$1=="port"{print $2}' | sort -u | xargs)
-  CURRENT_SSH_PORTS=${CURRENT_SSH_PORTS:-22}
+  CURRENT_SSH_PORTS=$(current_ssh_ports)
 }
 
 # ---------- 1. questions ----------
@@ -257,7 +287,7 @@ valid_user() {
   [[ $1 =~ ^[a-z_][a-z0-9_-]{0,31}$ && $1 != root ]] \
     || { warn "$(T "Только латиница в нижнем регистре, цифры, _ и -" "Lowercase latin letters, digits, _ and - only")"; return 1; }
   if id "$1" &>/dev/null; then
-    (( $(id -u "$1") >= 1000 )) || { warn "$(T "'$1' — системный пользователь, выбери другое имя" "'$1' is a system user, pick another name")"; return 1; }
+    (( $(id -u "$1") >= 1000 && $(id -u "$1") < 60000 )) || { warn "$(T "'$1' — системный пользователь, выбери другое имя" "'$1' is a system user, pick another name")"; return 1; }
   elif getent group "$1" >/dev/null; then
     # Ubuntu ships a system group called "admin" — adduser admin fails on it
     warn "$(T "Имя '$1' занято системной группой, выбери другое" "'$1' is taken by a system group, pick another name")"; return 1
@@ -268,8 +298,9 @@ valid_user() {
 # yes: it may already carry other people's keys or a NOPASSWD sudo rule from cloud-init.
 confirm_existing_user() {
   id "$1" &>/dev/null || return 0
-  local keys=0
-  [[ -f /home/$1/.ssh/authorized_keys ]] && keys=$(grep -c . "/home/$1/.ssh/authorized_keys" || true)
+  local keys=0 h
+  h=$(home_of "$1")
+  [[ -f $h/.ssh/authorized_keys ]] && keys=$(grep -c . "$h/.ssh/authorized_keys" || true)
   warn "$(T "Пользователь '$1' уже существует. Ключей в его authorized_keys: $keys — они останутся." \
             "User '$1' already exists. Keys in its authorized_keys: $keys — they will stay.")"
   if grep -qsE "^$1[[:space:]].*NOPASSWD" /etc/sudoers /etc/sudoers.d/*; then
@@ -312,6 +343,17 @@ collect_answers() {
       3) cp /root/.ssh/authorized_keys "$PUBKEY_FILE" 2>/dev/null || warn "$(T "У root нет authorized_keys" "root has no authorized_keys")" ;;
       *) echo "$(T "Создать ключ на СВОЁМ компьютере:" "Create a key on YOUR computer:")  ssh-keygen -t ed25519 -C \"$NEW_USER@server\""
          ask "$(T "Вставь публичный ключ (ssh-ed25519 AAAA...)" "Paste the public key (ssh-ed25519 AAAA...)")"
+         # A paste of several lines (PuTTYgen's "SSH2 PUBLIC KEY" block, a private key)
+         # would leave its other lines in the terminal to answer the next questions
+         while read -r -t 0.2 _ </dev/tty; do :; done
+         case $REPLY in
+           *'BEGIN SSH2 PUBLIC KEY'*|PuTTY-User-Key-File*)
+             warn "$(T "Это формат PuTTY. В PuTTYgen скопируй одну строку из поля «Public key for pasting into OpenSSH authorized_keys file»." \
+                       "This is PuTTY's format. In PuTTYgen copy the single line from the box \"Public key for pasting into OpenSSH authorized_keys file\".")" ;;
+           *'PRIVATE KEY'*)
+             warn "$(T "Это ПРИВАТНЫЙ ключ — его нельзя никуда вставлять. Публичный лежит рядом, в файле .pub." \
+                       "This is a PRIVATE key — never paste it anywhere. The public one is next to it, in the .pub file.")" ;;
+         esac
          printf '%s\n' "$REPLY" >"$PUBKEY_FILE" ;;
     esac
   done
@@ -352,6 +394,8 @@ collect_answers() {
   if env_yn AUTO_REBOOT "$(T "Разрешить автоперезагрузку ночью, если обновление ядра этого требует?" \
                              "Allow a nightly automatic reboot when a kernel update needs it?")" y; then
     AUTO_REBOOT=yes; REBOOT_TIME=${REBOOT_TIME:-04:00}
+    [[ $REBOOT_TIME =~ ^([01][0-9]|2[0-3]):[0-5][0-9]$ ]] \
+      || { warn "$(T "REBOOT_TIME должно быть ЧЧ:ММ — беру 04:00" "REBOOT_TIME must be HH:MM — using 04:00")"; REBOOT_TIME=04:00; }
   else AUTO_REBOOT=no; fi
 
   if env_yn LOCK_ROOT "$(T "Заблокировать пароль root (вход только через $NEW_USER + sudo)?" \
@@ -437,6 +481,17 @@ check_pubkeys() {  # is the key file usable?
 }
 
 # ---------- 2. packages ----------
+# Everything the setup installs. CI asks apt on each supported release whether these exist
+# there, so a renamed package is found by a test and not half-way through a setup.
+setup_packages() {
+  echo ufw fail2ban python3-systemd \
+       unattended-upgrades apt-listchanges needrestart debsums \
+       apparmor apparmor-utils chrony libpam-pwquality \
+       lynis curl ca-certificates gnupg sudo openssh-server \
+       libpam-tmpdir apt-show-versions acct sysstat rsyslog logrotate
+  [[ ${IS_CONTAINER:-no} == yes ]] || echo auditd audispd-plugins
+}
+
 install_packages() {
   step "$(T "Обновление системы и установка пакетов" "System upgrade and packages")"
   export DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a
@@ -444,27 +499,33 @@ install_packages() {
   local apt_opts=(-y -o DPkg::Lock::Timeout=600 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold)
   apt-get -o DPkg::Lock::Timeout=600 update -q
   apt-get "${apt_opts[@]}" full-upgrade
-  local pkgs=(
-    ufw fail2ban python3-systemd
-    unattended-upgrades apt-listchanges needrestart debsums
-    apparmor apparmor-utils
-    chrony libpam-pwquality
-    lynis curl ca-certificates gnupg sudo openssh-server
-    libpam-tmpdir apt-show-versions acct sysstat
-    rsyslog logrotate
-  )
-  [[ $IS_CONTAINER == no ]] && pkgs+=(auditd audispd-plugins)
+  local -a pkgs
+  read -ra pkgs <<<"$(setup_packages | xargs)"
   apt-get "${apt_opts[@]}" install "${pkgs[@]}"
   apt-get "${apt_opts[@]}" autoremove --purge
-  # Leftover configs of removed packages (status rc)
-  local rc_pkgs
-  rc_pkgs=$(dpkg -l | awk '/^rc/{print $2}')
-  # shellcheck disable=SC2086  # word splitting is intended: one argument per package
-  [[ -n $rc_pkgs ]] && dpkg --purge $rc_pkgs >/dev/null
+  # Packages that were removed earlier but left their configs behind (status rc) are only
+  # counted. Purging them here deleted configuration — for some packages, data too — that
+  # the admin of an existing server may have kept on purpose.
+  local rc_n
+  rc_n=$(dpkg -l | awk '/^rc/{n++} END{print n+0}')
+  (( rc_n == 0 )) || info "$(T "От удалённых пакетов остались конфиги: $rc_n (список: dpkg -l | grep ^rc; убрать: sudo apt purge <имя>)" \
+                               "Configs left by removed packages: $rc_n (list: dpkg -l | grep ^rc; remove: sudo apt purge <name>)")"
   ok "$(T "Пакеты установлены" "Packages installed")"
 }
 
 # ---------- 3. user ----------
+# add_keys FROM TO — append the keys that are not there yet. An existing file that does
+# not end in a newline would get the first new key glued onto its last line, breaking both.
+add_keys() {
+  local line
+  touch "$2"
+  [[ ! -s $2 || -z $(tail -c1 "$2") ]] || echo >>"$2"
+  while read -r line; do
+    [[ -n $line ]] || continue
+    grep -qxF -- "$line" "$2" || echo "$line" >>"$2"
+  done <"$1"
+}
+
 setup_user() {
   step "$(T "Пользователь" "User") $NEW_USER"
 
@@ -486,13 +547,12 @@ EOF
   fi
   usermod -aG sudo "$NEW_USER"
 
-  install -d -m 700 -o "$NEW_USER" -g "$NEW_USER" "/home/$NEW_USER/.ssh"
-  local ak="/home/$NEW_USER/.ssh/authorized_keys"
-  touch "$ak"
-  while read -r line; do
-    grep -qxF "$line" "$ak" || echo "$line" >>"$ak"
-  done <"$PUBKEY_FILE"
-  chown "$NEW_USER:$NEW_USER" "$ak"; chmod 600 "$ak"
+  local home grp
+  home=$(home_of "$NEW_USER"); grp=$(id -gn "$NEW_USER")
+  install -d -m 700 -o "$NEW_USER" -g "$grp" "$home/.ssh"
+  local ak="$home/.ssh/authorized_keys"
+  add_keys "$PUBKEY_FILE" "$ak"
+  chown "$NEW_USER:$grp" "$ak"; chmod 600 "$ak"
   ok "$(T "Ключ добавлен в" "Key added to") $ak"
 
   USER_HAS_PASSWORD=no
@@ -517,6 +577,16 @@ Defaults    passwd_tries=3
 EOF
   chmod 440 /etc/sudoers.d/99-hardening
   visudo -cq || { rm -f /etc/sudoers.d/99-hardening; die "$(T "Ошибка sudoers" "sudoers error")"; }
+  # The sudo log would otherwise grow for ever
+  cat >/etc/logrotate.d/harden-sudo <<'EOF'
+/var/log/sudo.log {
+    monthly
+    rotate 12
+    compress
+    missingok
+    notifempty
+}
+EOF
   ok "$(T "Пользователь готов" "User ready")"
 }
 
@@ -527,7 +597,8 @@ lock_other_users() {
   for u in $OTHER_USERS; do
     usermod -L -s /usr/sbin/nologin "$u"
     for g in sudo adm lxd docker; do gpasswd -d "$u" "$g" &>/dev/null || true; done
-    [[ -f /home/$u/.ssh/authorized_keys ]] && mv "/home/$u/.ssh/authorized_keys" "$BACKUP_DIR/authorized_keys.$u"
+    f=$(home_of "$u")
+    [[ -f $f/.ssh/authorized_keys ]] && mv "$f/.ssh/authorized_keys" "$BACKUP_DIR/authorized_keys.$u"
     # cloud-init grants ubuntu/debian "NOPASSWD:ALL" — comment it out
     for f in /etc/sudoers.d/*; do
       [[ -f $f ]] && grep -qE "^${u}[[:space:]]" "$f" || continue
@@ -784,7 +855,9 @@ EOF
   chmod 600 /etc/crontab 2>/dev/null || true
   chmod 700 /etc/cron.d /etc/cron.daily /etc/cron.hourly /etc/cron.weekly /etc/cron.monthly 2>/dev/null || true
   chmod 600 /etc/ssh/sshd_config 2>/dev/null || true
-  chmod 750 /home/"$NEW_USER"
+  local home
+  home=$(home_of "$NEW_USER")
+  if [[ -d $home && $home != / ]]; then chmod 750 "$home"; fi
 
   ok "$(T "Система усилена" "System hardened")"
 }
@@ -873,15 +946,21 @@ setup_firewall() {
     [[ $p == "$SSH_PORT" ]] && continue
     ufw allow "$p/tcp" comment 'SSH (temporary)' >/dev/null
   done
-  # The admin is not rate-limited: this rule precedes the limit rule and UFW stops at the first match
-  [[ -n $ADMIN_IP ]] && ufw allow from "$ADMIN_IP" to any port "$SSH_PORT" proto tcp comment 'SSH admin' >/dev/null
+  # The admin is not rate-limited: this rule has to precede the limit rule, since UFW stops
+  # at the first match. prepend, not a plain allow — on a re-run with a new address a plain
+  # allow landed after the limit rule that was already there, and did nothing.
+  if [[ -n $ADMIN_IP ]]; then
+    ufw prepend allow from "$ADMIN_IP" to any port "$SSH_PORT" proto tcp comment 'SSH admin' >/dev/null
+  fi
   ufw limit "$SSH_PORT/tcp" comment 'SSH' >/dev/null
   local -a extra
   IFS=, read -ra extra <<<"$EXTRA_PORTS"
   for p in "${extra[@]}"; do
     [[ -z $p ]] && continue
-    if [[ $p =~ ^[0-9]+(:[0-9]+)?(/(tcp|udp))?$ ]]; then ufw allow "$p" >/dev/null
-    else warn "$(T "Пропущен неверный порт:" "Invalid port skipped:") $p"; fi
+    # UFW has the last word (a range needs a protocol, a port has to be below 65536). Its
+    # refusal is a skipped port, not the end of the setup, which is what it used to be.
+    if [[ $p =~ ^[0-9]+(:[0-9]+)?(/(tcp|udp))?$ ]] && ufw allow "$p" >/dev/null 2>&1; then :
+    else warn "$(T "Порт пропущен (диапазону нужен протокол: 8000:8100/tcp):" "Port skipped (a range needs a protocol: 8000:8100/tcp):") $p"; fi
   done
   ufw logging low
   ufw --force enable
@@ -1008,7 +1087,9 @@ LOCAL_IP=$(ip -4 -o addr show scope global 2>/dev/null | awk '{split($4,a,"/"); 
 OS=$(. /etc/os-release 2>/dev/null; echo "${PRETTY_NAME:-Linux}")
 USER_NAME=$(id -un)
 if [ "$USER_NAME" = root ]; then USER_C="${RED}${USER_NAME}${NC}"; else USER_C="${GOLD}${USER_NAME}${NC}"; fi
-read -r RAM_TOTAL RAM_AVAIL < <(free -m | awk '/^Mem:/{print $2, $7}')
+# /proc/meminfo, not `free`: under a non-English locale free prints a translated "Mem:"
+# and the summary came out with empty numbers and an arithmetic error at every login
+read -r RAM_TOTAL RAM_AVAIL < <(awk '/^MemTotal:/{t=$2} /^MemAvailable:/{a=$2} END{printf "%d %d\n", t/1024, a/1024}' /proc/meminfo)
 read -r DISK_SIZE DISK_AVAIL DISK_USED < <(df -h --output=size,avail,pcent / | awk 'NR==2{print $1, $2, $3}')
 
 # Updates: Ubuntu's cache (instant), otherwise an apt simulation capped at 3 s
@@ -1027,12 +1108,12 @@ kv "Hostname" "${LIME}$(hostname)${NC}"
 kv "OS"       "$OS ($(uname -r))"
 kv "User"     "$USER_C"
 kv "Loadavg"  "$(cut -d' ' -f1-3 /proc/loadavg)"
-kv "Uptime"   "$(uptime -p | sed 's/^up //')"
+kv "Uptime"   "$(LC_ALL=C uptime -p | sed 's/^up //')"
 if [ "${UPDATES:-0}" -gt 0 ]; then kv "Updates" "${RED}${UPDATES}${NC}"; else kv "Updates" "${GREEN}0${NC}"; fi
 [ -f /var/run/reboot-required ] && kv "Reboot" "${RED}required (sudo reboot)${NC}"
 line "----------------------------------------"
 kv "CPU"      "$(nproc) cores"
-kv "RAM"      "${RAM_TOTAL} MB total, ${RAM_AVAIL} MB free ($(pct $(( RAM_AVAIL * 100 / RAM_TOTAL ))))"
+kv "RAM"      "${RAM_TOTAL} MB total, ${RAM_AVAIL} MB free ($(pct $(( RAM_AVAIL * 100 / (RAM_TOTAL > 0 ? RAM_TOTAL : 1) ))))"
 kv "Disk /"   "${DISK_SIZE} total, ${DISK_AVAIL} free ($(pct $(( 100 - ${DISK_USED%\%} ))))"
 kv "Gateway"  "$(ip route show default 2>/dev/null | awk '{print $3; exit}')"
 line "----------------------------------------"
@@ -1152,7 +1233,12 @@ setup_crowdsec() {
   local apt_opts=(-y -o DPkg::Lock::Timeout=600)
   # Engine first (it creates /etc/crowdsec/config.yaml), then the bouncer — installed
   # together, apt may configure the bouncer first and it fails without config.yaml
-  apt-get "${apt_opts[@]}" install crowdsec
+  # An optional part: if it does not install, the setup goes on without it rather than
+  # stopping half-way with SSH still to be done
+  if ! apt-get "${apt_opts[@]}" install crowdsec; then
+    warn "$(T "CrowdSec не установился — пропущен, fail2ban защищает SSH и без него" "CrowdSec did not install — skipped; fail2ban protects SSH without it")"
+    return 0
+  fi
   if [[ -n $ADMIN_IP ]]; then
     mkdir -p /etc/crowdsec/parsers/s02-enrich
     cat >/etc/crowdsec/parsers/s02-enrich/99-harden-admin-whitelist.yaml <<EOF
@@ -1165,8 +1251,9 @@ whitelist:
 EOF
   fi
   cscli collections install crowdsecurity/linux crowdsecurity/sshd >/dev/null 2>&1 || true
-  systemctl restart crowdsec
-  apt-get "${apt_opts[@]}" install crowdsec-firewall-bouncer-nftables
+  systemctl restart crowdsec || true
+  apt-get "${apt_opts[@]}" install crowdsec-firewall-bouncer-nftables \
+    || warn "$(T "Bouncer CrowdSec не установился" "The CrowdSec bouncer did not install")"
   # CrowdSec's own security fixes arrive the same way as the system's
   cat >/etc/apt/apt.conf.d/53-hardening-crowdsec <<EOF
 Unattended-Upgrade::Origins-Pattern { "origin=$CROWDSEC_ORIGIN"; };
@@ -1338,7 +1425,7 @@ restart_sshd() {  # restart_sshd port... — the ports the new daemon must end u
 rollback_ssh() {
   warn "$(T "Откат настроек SSH..." "Rolling SSH back...")"
   rm -f "$SSHD_DROPIN"
-  cp -a "$BACKUP_DIR/ssh/." /etc/ssh/
+  if [[ -d $BACKUP_DIR/ssh ]]; then cp -a "$BACKUP_DIR/ssh/." /etc/ssh/ || true; fi
   # shellcheck disable=SC2086
   restart_sshd $CURRENT_SSH_PORTS || systemctl restart "$(ssh_service)" || true
 }
@@ -1370,7 +1457,7 @@ setup_ssh() {
   if systemctl is-enabled ssh.socket &>/dev/null; then
     info "$(T "Отключаю ssh.socket (socket activation), включаю ssh.service" "Disabling ssh.socket (socket activation), enabling ssh.service")"
     systemctl disable ssh.socket &>/dev/null || true
-    systemctl enable ssh.service &>/dev/null
+    systemctl enable ssh.service &>/dev/null || true
   fi
 
   # Stage 1: old and new port side by side
@@ -1381,6 +1468,16 @@ setup_ssh() {
   # shellcheck disable=SC2086
   restart_sshd $ports || { rollback_ssh; die "$(T "sshd не перезапустился — откатил." "sshd did not restart — rolled back.")"; }
   ok "$(T "sshd слушает порты:" "sshd listens on ports:") $ports"
+
+  # What sshd will really do, not what our file says: a line earlier in sshd_config, or a
+  # drop-in that sorts before ours, wins ("first match wins")
+  local eff bad="" kv
+  eff=$(sshd -T 2>/dev/null || true)
+  for kv in 'passwordauthentication no' 'permitrootlogin no' 'kbdinteractiveauthentication no' 'authenticationmethods publickey'; do
+    grep -qx "$kv" <<<"$eff" || bad+="[$kv] "
+  done
+  [[ -z $bad ]] || warn "$(T "Эти настройки SSH не действуют — их перекрывает что-то выше в /etc/ssh/sshd_config или в sshd_config.d:" \
+                            "These SSH settings are not in effect — something earlier in /etc/ssh/sshd_config or in sshd_config.d overrides them:") $bad"
 
   # The admin proves the new login works before anything is closed
   local ip
@@ -1415,9 +1512,13 @@ setup_ssh() {
   local p
   for p in $CURRENT_SSH_PORTS; do
     [[ $p == "$SSH_PORT" ]] && continue
+    # every form the old port may have been opened in, not only the one this script uses
     ufw delete allow "$p/tcp" >/dev/null 2>&1 || true
+    ufw delete allow "$p" >/dev/null 2>&1 || true
+    ufw delete limit "$p/tcp" >/dev/null 2>&1 || true
   done
   ufw delete allow OpenSSH >/dev/null 2>&1 || true
+  ufw delete limit OpenSSH >/dev/null 2>&1 || true
   ok "$(T "SSH только на порту $SSH_PORT, только по ключу, root запрещён" "SSH on port $SSH_PORT only, keys only, root denied")"
 }
 
@@ -1444,9 +1545,11 @@ final_report() {
   if [[ $RUN_LYNIS == yes ]]; then
     step "$(T "Аудит Lynis (1–2 минуты)" "Lynis audit (1–2 minutes)")"
     lynis audit system --quick --no-colors >/var/log/lynis-harden.log 2>&1 || true
+    chmod 600 /var/log/lynis-harden.log 2>/dev/null || true
     HARDENING_INDEX=$(grep -oP 'Hardening index : \K[0-9]+' /var/log/lynis-harden.log || echo "?")
   fi
 
+  install -m 600 /dev/null "$REPORT_FILE"   # root only from the first byte, not after the fact
   {
     echo "Server hardening report — $(date)"
     echo "OS: $OS_NAME   virt: $VIRT"
@@ -1532,7 +1635,7 @@ ask_telegram() {  # sets TG_TOKEN / TG_CHAT_ID, or TELEGRAM=no if the admin give
     read -r -s -p "$(T "Токен бота (ввод скрыт, пусто — пропустить): " "Bot token (hidden, empty to skip): ")" token </dev/tty; echo
     [[ -z $token ]] && { TELEGRAM=no; return 0; }
   done
-  bot=$(tg_api "$token" getMe | grep -o '"username":"[^"]*"' | cut -d'"' -f4)
+  bot=$(tg_api "$token" getMe | grep -o '"username":"[^"]*"' | cut -d'"' -f4 || true)
   if [[ ! $chat =~ ^-?[0-9]+$ ]]; then
     T "  2) Откройте https://t.me/$bot, нажмите Start (или отправьте любое сообщение) и нажмите Enter здесь" \
       "  2) Open https://t.me/$bot, press Start (or send any message), then press Enter here"; echo
@@ -1555,6 +1658,7 @@ ask_telegram() {  # sets TG_TOKEN / TG_CHAT_ID, or TELEGRAM=no if the admin give
 install_notifications() {
   [[ ${TELEGRAM:-no} == yes ]] || return 0
   step "$(T "Уведомления в Telegram" "Telegram alerts")"
+  [[ ${TG_REPORT_TIME:-09:00} =~ ^([01][0-9]|2[0-3]):[0-5][0-9]$ ]] || TG_REPORT_TIME=09:00
   install -d -m 700 /etc/harden
   (
     umask 077
@@ -1646,10 +1750,10 @@ bans=0
 banned=$(fail2ban-client status sshd 2>/dev/null | awk -F'\t' '/Currently banned/{print $2}')
 failed=$(systemctl --failed --no-legend --plain 2>/dev/null | awk '{print $1}' | paste -sd' ' -)
 disk=$(df -h --output=avail,pcent / | awk 'NR==2{print $1" free ("$2" used)"}')
-ram=$(free -m | awk '/^Mem:/{print $7" MB free of "$2}')
+ram=$(awk '/^MemTotal:/{t=$2} /^MemAvailable:/{a=$2} END{printf "%d MB free of %d", a/1024, t/1024}' /proc/meminfo)
 
 msg="📊 Daily report
-Uptime: $(uptime -p | sed 's/^up //'), load $(cut -d' ' -f1-3 /proc/loadavg)
+Uptime: $(LC_ALL=C uptime -p | sed 's/^up //'), load $(cut -d' ' -f1-3 /proc/loadavg)
 Updates: $upd pending ($sec security)"
 [ -f /var/run/reboot-required ] && msg="$msg
 ⚠️ Reboot required"
@@ -1765,7 +1869,7 @@ chk() {  # chk pass|warn|fail|info "text" — info is shown and not counted: a f
 }
 
 run_check() {
-  local cfg v kex weak n list u out nons=no
+  local cfg v kex weak n list u out nons=no other
   . /etc/os-release
   step "$(T "Проверка сервера — ничего не меняется" "Server check — nothing is changed")"
   echo "  ${PRETTY_NAME:-?}, kernel $(uname -r)"
@@ -1832,7 +1936,8 @@ run_check() {
     [[ $(passwd -S "$u" 2>/dev/null | awk '{print $2}') == P ]] && list+="$u "
   done
   [[ -n $list ]] && chk pass "$(T "Аккаунты с входом:" "Login accounts:") $list" || chk warn "$(T "Нет аккаунта с паролем для sudo" "No account with a password for sudo")"
-  list=$(grep -hsE '^[^#%].*NOPASSWD' /etc/sudoers /etc/sudoers.d/* | awk '{print $1}' | sort -u | paste -sd' ' - || true)
+  # Group rules count as well: "%sudo ALL=(ALL) NOPASSWD: ALL" used to be skipped
+  list=$(grep -hsE '^[^#].*NOPASSWD' /etc/sudoers /etc/sudoers.d/* | awk '{print $1}' | sort -u | paste -sd' ' - || true)
   [[ -z $list ]] && chk pass "$(T "Нет sudo без пароля" "No passwordless sudo")" || chk warn "$(T "sudo без пароля (NOPASSWD):" "Passwordless sudo (NOPASSWD):") $list"
 
   echo; echo "${C_BOLD}$(T "Сеть и защита" "Network and protection")${C_0}"
@@ -1844,7 +1949,23 @@ run_check() {
     grep -q 'deny (incoming)' <<<"$out" && chk pass "$(T "UFW включён, входящие запрещены" "UFW on, incoming denied")" \
       || chk warn "$(T "UFW включён, но входящие не запрещены по умолчанию" "UFW on, but incoming is not denied by default")"
   else
-    chk fail "$(T "Firewall UFW выключен" "UFW firewall is off")"
+    # UFW is not the only firewall. The check does not read other rule sets, but it must
+    # not call a server unprotected when something else is dropping incoming traffic.
+    other=""
+    if systemctl is-active --quiet firewalld 2>/dev/null; then other=firewalld; fi
+    if [[ -z $other ]]; then
+      out=$(nft list ruleset 2>/dev/null || true)
+      if grep -qE 'hook input .*policy drop' <<<"$out"; then other=nftables; fi
+    fi
+    if [[ -z $other ]]; then
+      out=$(iptables -S INPUT 2>/dev/null || true)
+      if grep -qx -- '-P INPUT DROP' <<<"$out"; then other=iptables; fi
+    fi
+    if [[ -n $other ]]; then
+      chk warn "$(T "UFW выключен, входящие фильтрует $other — его правила здесь не проверяются" "UFW is off; incoming traffic is filtered by $other — its rules are not checked here")"
+    else
+      chk fail "$(T "Firewall UFW выключен" "UFW firewall is off")"
+    fi
   fi
   # Everything bound beyond loopback; UDP 68 is the DHCP client, not a service
   list=$(ss -Hltnu 2>/dev/null | awk '{print $1, $5}' | grep -vE ' (127\.|\[::1\]|\[::ffff:127\.)' \
@@ -1897,6 +2018,16 @@ run_check() {
   (( CHK_FAIL == 0 ))
 }
 
+# Keep a copy for later (sudo harden --check / --setup-telegram). Run as `sudo harden`
+# the script is that copy already, and `install` onto itself fails — which under set -e
+# used to end a re-run with an error right before the final report.
+install_self() {
+  local src=${1:-$0} dst=/usr/local/sbin/harden
+  [[ -f $src ]] || return 0
+  [[ $src -ef $dst ]] && return 0
+  install -m 755 "$src" "$dst"
+}
+
 main() {
   case ${1:-} in
     -h|--help) usage; exit 0 ;;
@@ -1943,8 +2074,7 @@ main() {
   # locking them earlier would leave no way in if SSH had to be rolled back
   lock_other_users
   lock_root
-  # Keep a copy for later: sudo harden --check / --setup-telegram
-  [[ -f $0 ]] && install -m 755 "$0" /usr/local/sbin/harden
+  install_self
   final_report
 }
 

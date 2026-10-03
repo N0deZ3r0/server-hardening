@@ -196,7 +196,9 @@ configuration (`sshd -T`), accounts and sudo rules, firewall, fail2ban and Crowd
 AppArmor, updates, clock and kernel settings, and prints one line each. On a server this
 script set up, every kernel value it wrote is compared with the live one, so a setting that
 something else has put back shows up. Package configs that an update kept back for review
-are counted. Where it cannot look — a container that will not let it read the SSH config
+are counted. A firewall other than UFW — firewalld, or nftables or iptables dropping
+incoming traffic — is recognised and reported with `!`; its rules are not read. Where it
+cannot look — a container that will not let it read the SSH config
 without creating a directory — it says so with `!` instead of calling the config broken.
 An illustration of the format:
 
@@ -347,6 +349,14 @@ Knowingly open, with the reason for each:
   boot, and the distribution's own sysctl file lowering `fs.protected_fifos` after ours —
   and each is now replayed in CI. The failure alert is
   verified in CI only, with a unit that really fails, against a stand-in for the Bot API.
+- **Paths no live run took were found by reading the code**, line by line, and are now
+  tested: a re-run through `sudo harden` ended in an error just before the final report;
+  a run from the provider's console, before any SSH connection, stopped while looking
+  for the current port; a cloud-init that is installed but never runs was waited for
+  for 45 minutes; a failed CrowdSec install or an extra port UFW refused ended the whole
+  setup half-way; a key was glued onto the last line of an `authorized_keys` file that
+  did not end in a newline. That such things were there says what an untested path is
+  worth — see the first point of this list.
 - **Not answering ping is obscurity, not protection.** It takes the server out of ping
   sweeps; a port scan finds it just the same. The practical reason to turn it on is a VPN
   server: detectors such as 2ip compare the ping time to your address with the latency
