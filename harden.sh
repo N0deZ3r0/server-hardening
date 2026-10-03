@@ -39,7 +39,7 @@ set -Eeuo pipefail
 # explicitly where it is written.
 umask 022
 
-HARDEN_VERSION="2026.10.22"
+HARDEN_VERSION="2026.10.23"
 LOG_FILE="/var/log/harden.log"
 REPORT_FILE="/root/harden-report.txt"
 BACKUP_DIR="/root/harden-backup-$(date +%Y%m%d-%H%M%S)"
@@ -1910,6 +1910,19 @@ fi
 msg="$msg
 Failed services: ${failed:-none}
 Disk /: $disk, RAM: $ram"
+# The audit in one line, and the lines that need attention: a setting that has drifted is
+# seen the next morning, not at the next check someone happens to run
+if [ -x /usr/local/sbin/harden ]; then
+  chk=$(HARDEN_LANG=en /usr/local/sbin/harden --check 2>/dev/null)
+  sum=$(printf '%s\n' "$chk" | sed -n 's/^Summary: //p')
+  if [ -n "$sum" ]; then
+    msg="$msg
+Check: $sum"
+    bad=$(printf '%s\n' "$chk" | grep -E '^  (✗|!) ' | grep -v 'Reboot required' | head -5)
+    [ -n "$bad" ] && msg="$msg
+$bad"
+  fi
+fi
 /usr/local/sbin/harden-notify "$msg"
 REPORT_EOF
   chmod 755 /usr/local/sbin/harden-notify /usr/local/sbin/harden-login-watch /usr/local/sbin/harden-daily-report

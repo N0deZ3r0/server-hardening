@@ -5,7 +5,7 @@
 **Одна команда превращает свежий VPS на Debian или Ubuntu в сервер, который пускает только по вашему ключу, — и не закроет старую дверь, пока вы не прошли через новую.**
 
 [![CI](https://github.com/N0deZ3r0/server-hardening/actions/workflows/ci.yml/badge.svg)](https://github.com/N0deZ3r0/server-hardening/actions/workflows/ci.yml)
-![version](https://img.shields.io/badge/version-2026.10.22-3b5bdb)
+![version](https://img.shields.io/badge/version-2026.10.23-3b5bdb)
 ![Debian](https://img.shields.io/badge/Debian-12%20%2F%2013-a80030)
 ![Ubuntu](https://img.shields.io/badge/Ubuntu-22.04%20%2F%2024.04%20%2F%2026.04-e95420)
 ![bash](https://img.shields.io/badge/bash-%D0%BE%D0%B4%D0%B8%D0%BD%20%D1%84%D0%B0%D0%B9%D0%BB-2f9e44)
@@ -25,7 +25,7 @@ CrowdSec, усиливает ядро, включает автообновлен
 Интерфейс — на русском и английском.
 
 ```bash
-curl -fsSLo harden.sh https://github.com/N0deZ3r0/server-hardening/releases/download/v2026.10.22/harden.sh && echo "6617af889051804999ed390626ebf0d35006e24942f3de6de3168733f0b113a1  harden.sh" | sha256sum -c - && sudo bash harden.sh
+curl -fsSLo harden.sh https://github.com/N0deZ3r0/server-hardening/releases/download/v2026.10.23/harden.sh && echo "5bdd325728af1784dbd074a0770b7293347ebff6e8b934dc9ed23813454d56a1  harden.sh" | sha256sum -c - && sudo bash harden.sh
 ```
 
 Команда скачивает конкретный релиз и сверяет его SHA-256 до запуска: если отличается хоть
@@ -300,13 +300,40 @@ sudo harden --undo                     # откатить настройку и�
 `/etc/sysctl.d/99-hardening.conf` и `99-protect-links.conf`, исходные файлы — в `/root/harden-backup-<дата>/`.
 Заблокированный аккаунт возвращается командой `sudo usermod -U -s /bin/bash <имя>`.
 
+## Если это VPN-сервер
+
+Про VPN настройка ничего не знает: после неё сервер принимает SSH и больше ничего. Что VPN
+нужно сверх этого — ничто из перечисленного тестами проекта не проверяется:
+
+- **Откройте порт VPN, и только его:** `sudo ufw allow 51820/udp` для WireGuard,
+  `sudo ufw allow 443/tcp` для прокси на 443. Порт панели управления лучше открыть только
+  своему адресу: `sudo ufw allow from <ваш IP> to any port <порт> proto tcp`.
+- **Прокси** (Xray, sing-box, Shadowsocks, панели вроде x-ui) больше ничего не требует: он
+  принимает подключения и сам устанавливает свои.
+- **Маршрутизируемому VPN** (WireGuard, OpenVPN) нужна ещё пересылка пакетов. Ядро её не
+  делает, пока не сказано, а firewall по умолчанию запрещает:
+
+  ```bash
+  echo 'net.ipv4.ip_forward = 1' | sudo tee /etc/sysctl.d/99-vpn.conf && sudo sysctl --system
+  sudo ufw route allow in on wg0 out on eth0
+  ```
+
+  с вашими именами интерфейсов. Трансляцию адресов (`MASQUERADE`) обычно добавляет `PostUp`
+  самого VPN.
+- **SSH-туннели выключены** (`AllowTcpForwarding no`) — как включить, сказано в «Ограничениях».
+- **Контейнеры публикуют порты в обход UFW** — см. «Ограничения».
+- **Не отвечать на ping** — опция как раз для этого случая; что она скрывает и чего не
+  скрывает, сказано в «Ограничениях».
+- После установки VPN посмотрите строку «Порты, слушающие снаружи» в `sudo harden --check`:
+  там должны быть порт SSH, порт VPN и ничего неожиданного.
+
 ## Обновление
 
 На уже настроенном сервере скачайте новый скрипт и дайте ему применить свои настройки —
 те же загрузка и контрольная сумма, а вместо настройки `--refresh`:
 
 ```bash
-curl -fsSLo harden.sh https://github.com/N0deZ3r0/server-hardening/releases/download/v2026.10.22/harden.sh && echo "6617af889051804999ed390626ebf0d35006e24942f3de6de3168733f0b113a1  harden.sh" | sha256sum -c - && sudo bash harden.sh --refresh
+curl -fsSLo harden.sh https://github.com/N0deZ3r0/server-hardening/releases/download/v2026.10.23/harden.sh && echo "5bdd325728af1784dbd074a0770b7293347ebff6e8b934dc9ed23813454d56a1  harden.sh" | sha256sum -c - && sudo bash harden.sh --refresh
 ```
 
 `--refresh` ничего не спрашивает. Он записывает настройки ядра, правила аудита, настройки
@@ -340,6 +367,11 @@ curl -fsSLo harden.sh https://github.com/N0deZ3r0/server-hardening/releases/down
 [релиз](https://github.com/N0deZ3r0/server-hardening/releases) с `harden.sh`, `SHA256SUMS` и
 подписанной записью о происхождении сборки, а команда установки выше называет один релиз и
 одну контрольную сумму.
+
+Что менялось в каждой версии и какие версии где-то не заработали — в
+[CHANGELOG.ru.md](CHANGELOG.ru.md); текст каждого релиза собирается из него. Релиз не
+публикуется, если CI — а в него входит вся настройка на виртуальной машине каждой
+поддерживаемой версии — не прошёл для его коммита.
 
 **Что доказывает контрольная сумма:** скачанный файл байт в байт совпадает с выпущенным —
 не обрезан, не изменён по дороге и не является тем, что сегодня случайно лежит в `main`.

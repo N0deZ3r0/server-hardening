@@ -1,0 +1,48 @@
+name: Release notes
+
+# The text of every release on GitHub comes from CHANGELOG.md. When that file changes —
+# a version turns out to be broken and gets its "Known problem" line, say — the published
+# releases are brought in line. Only the text is touched: tags and files are not, and for
+# immutable releases cannot be.
+on:
+  push:
+    branches: [main]
+    paths:
+      - CHANGELOG.md
+      - tools/release-notes.sh
+      - .github/workflows/release-notes.yml
+
+permissions:
+  contents: write        # edit the text of releases
+
+concurrency:
+  group: release-notes
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    name: Bring the release texts in line with CHANGELOG.md
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0     # every tag, for the checksum of each version's file
+      - name: Update
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git fetch --tags --force --quiet
+          for tag in $(gh release list --limit 200 --json tagName --jq '.[].tagName'); do
+            if ! bash tools/release-notes.sh "$tag" > notes.md 2>err.txt; then
+              echo "::warning::$tag: $(cat err.txt)"
+              continue
+            fi
+            if gh release view "$tag" --json body --jq .body | diff -q - notes.md >/dev/null; then
+              echo "$tag: up to date"
+            elif gh release edit "$tag" --notes-file notes.md >/dev/null; then
+              echo "$tag: updated"
+            else
+              echo "::warning::$tag: could not be updated"
+            fi
+          done

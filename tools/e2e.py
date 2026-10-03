@@ -18,6 +18,7 @@ versions 2026.10.8 to 2026.10.17 could not finish on an Ubuntu 24.04 cloud image
 that was found only when someone ran one by hand. Its own first run found two more: the
 setup stopped on Debian 12 and on Ubuntu 26.04.
 """
+import os
 import pathlib
 import secrets
 import shlex
@@ -132,15 +133,17 @@ users:
     return pub
 
 
-def answers(pub, **more):
+def answers(pub, tmux=False, **more):
     env = {
-        "HARDEN_LANG": "en", "HARDEN_NO_TMUX": "1",
+        "HARDEN_LANG": "en",
         "NEW_USER": "alex", "SSH_PORT": str(NEW), "SSH_PUBKEY": pub,
         "EXTRA_PORTS": "80,443", "ADMIN_IP": GATEWAY,
         "AUTO_REBOOT": "no", "LOCK_ROOT": "yes", "LOCK_OTHER_USERS": "yes",
         "INSTALL_CROWDSEC": CROWDSEC, "RUN_LYNIS": "no", "TELEGRAM": "no",
         "DISABLE_PING": "yes", "REBOOT_NOW": "no",
     }
+    if not tmux:
+        env["HARDEN_NO_TMUX"] = "1"
     env.update(more)
     return " ".join(f"{k}={shlex.quote(v)}" for k, v in env.items())
 
@@ -148,8 +151,11 @@ def answers(pub, **more):
 def drive(port, user, command, password, stage, finish=r"Done!", login_check=True):
     """Runs a command on a terminal and answers what a person would be asked."""
     say(f"{stage}: {user}@{port}")
+    # A real terminal type and a wide window: the first setup moves itself into tmux where
+    # the image has it, and tmux draws for the terminal it is told about.
     child = pexpect.spawn("ssh", [*SSH, "-tt", "-p", str(port), f"{user}@127.0.0.1", command],
-                          encoding="utf-8", codec_errors="replace", timeout=1800)
+                          encoding="utf-8", codec_errors="replace", timeout=1800,
+                          env={**os.environ, "TERM": "xterm-256color"}, dimensions=(50, 220))
     child.logfile_read = sys.stdout
     patterns = [
         r"(Start|Undo the setup)\? \[y/n",        # 0
@@ -161,9 +167,11 @@ def drive(port, user, command, password, stage, finish=r"Done!", login_check=Tru
         r"\[sudo[^\]\n]*\][^\n]*:",               # 6  sudo and sudo-rs both start with "[sudo"
         pexpect.EOF,                              # 7
         pexpect.TIMEOUT,                          # 8
+        r"Press Enter to close tmux",             # 9
     ]
     done = False
     confirmed = not login_check
+    in_tmux = False
     while True:
         i = child.expect(patterns)
         if i == 0:
@@ -188,11 +196,15 @@ def drive(port, user, command, password, stage, finish=r"Done!", login_check=Tru
             fail(f"{stage} reported an error")
         elif i == 7:
             break
+        elif i == 9:
+            in_tmux = True
+            child.sendline("")
         else:
             fail(f"{stage}: no progress for 30 minutes — an unexpected question?")
     child.close()
     if not (done and confirmed):
         fail(f"{stage} ended without finishing (done={done}, login confirmed={confirmed})")
+    return in_tmux
 
 
 def sudo(password, command):
@@ -301,7 +313,14 @@ def main():
     password = "E2e-" + secrets.token_urlsafe(9) + "-7q"
     run("scp", *SSH, "-P", str(OLD), str(ROOT / "harden.sh"), "root@127.0.0.1:/root/harden.sh")
 
-    drive(OLD, "root", f"{answers(pub)} bash /root/harden.sh", password, "first setup")
+    # The first setup runs the way a person starts it: no HARDEN_NO_TMUX, so where the image
+    # has tmux the script moves itself into it. The later runs stay outside, to keep both
+    # ways covered.
+    has_tmux = ssh(OLD, "root", "command -v tmux", check=False).returncode == 0
+    print(f"tmux in the image: {has_tmux}")
+    in_tmux = drive(OLD, "root", f"{answers(pub, tmux=True)} bash /root/harden.sh", password, "first setup")
+    if has_tmux and not in_tmux:
+        fail("the image has tmux, but the setup did not move itself into it")
     verify(password, "after the setup")
     answers_and_refresh(password, pub)
     verify(password, "after --refresh")

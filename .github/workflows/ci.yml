@@ -549,6 +549,13 @@ jobs:
           # The daily report counts connections, and only logins
           sudo /usr/local/sbin/harden-daily-report
           grep -F 'Daily report' tg.log | grep -F 'SSH logins (24 h): 3 — alex@203.0.113.9×2, alex@203.0.113.10×1'
+          # ...and carries the audit: the summary, and what is wrong (plenty, on a runner)
+          if grep -F 'Daily report' tg.log | grep -qF 'Check: '; then echo "::error::a check line without the script installed"; exit 1; fi
+          sudo install -m 755 harden.sh /usr/local/sbin/harden
+          sudo /usr/local/sbin/harden-daily-report
+          grep -F 'Daily report' tg.log | tail -1 | grep -F 'Check: ✓ '
+          grep -F 'Daily report' tg.log | tail -1 | grep -F '✗ PasswordAuthentication'
+          sudo rm /usr/local/sbin/harden
           # A failing unit really sends the alert, through the same template the drop-ins use
           systemctl show ssh.service -p OnFailure | grep -q 'harden-alert@ssh.service'
           sudo systemd-run --quiet --unit=ci-fail --property=OnFailure=harden-alert@ci-fail.service.service /bin/false || true

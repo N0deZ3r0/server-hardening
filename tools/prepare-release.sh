@@ -11,6 +11,10 @@ v=${1:?usage: tools/prepare-release.sh YYYY.MM.N}
 [[ $v =~ ^[0-9]{4}\.[0-9]{2}\.[0-9]+$ ]] || { echo "version must look like 2026.10.0" >&2; exit 1; }
 cd "$(dirname "$0")/.."
 
+# The release text is taken from CHANGELOG.md; a version without an entry is refused there,
+# so it is refused here first.
+grep -qx "## $v" CHANGELOG.md || { echo "CHANGELOG.md has no section '## $v' — write it first" >&2; exit 1; }
+
 sed -i -E "s/^HARDEN_VERSION=\".*\"$/HARDEN_VERSION=\"$v\"/" harden.sh
 bash -n harden.sh
 # The checksum is taken after the version is written: the version is part of the file.

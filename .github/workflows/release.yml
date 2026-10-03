@@ -8,6 +8,7 @@ on:
 
 permissions:
   contents: write        # create the release
+  actions: read          # ask whether CI passed for the commit
   id-token: write        # sign the provenance attestation
   attestations: write
 
@@ -32,6 +33,21 @@ jobs:
         run: |
           git fetch --no-tags --depth=50 origin main
           git merge-base --is-ancestor "$GITHUB_SHA" origin/main
+
+      - name: CI passed for this commit
+        # A published release cannot be changed or taken back, so "the tests were green"
+        # is checked here and not left to whoever pushes the tag. CI includes the whole
+        # setup on a virtual machine of every supported release.
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          state=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yml --commit "$GITHUB_SHA" \
+                    --json status,conclusion --jq '.[0] | "\(.status):\(.conclusion)"')
+          echo "CI for $GITHUB_SHA: ${state:-no run}"
+          if [ "$state" != "completed:success" ]; then
+            echo "::error::CI has not passed for this commit — wait for it, or fix it, then tag again"
+            exit 1
+          fi
 
       - name: Syntax and ShellCheck
         run: |
@@ -60,22 +76,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          cat > notes.md <<EOF
-          \`\`\`
-          $SUM  harden.sh
-          \`\`\`
-
-          Install — the checksum is verified before anything runs:
-
-          \`\`\`bash
-          curl -fsSLo harden.sh https://github.com/$GITHUB_REPOSITORY/releases/download/$GITHUB_REF_NAME/harden.sh && echo "$SUM  harden.sh" | sha256sum -c - && sudo bash harden.sh
-          \`\`\`
-
-          Built from $GITHUB_SHA. With the GitHub CLI the provenance can be checked too:
-
-          \`\`\`bash
-          gh attestation verify harden.sh --repo $GITHUB_REPOSITORY
-          \`\`\`
-          EOF
+          # The text comes from CHANGELOG.md: no entry for this version, no release.
+          bash tools/release-notes.sh "$GITHUB_REF_NAME" > notes.md
+          grep -q "$SUM  harden.sh" notes.md
           gh release create "$GITHUB_REF_NAME" harden.sh SHA256SUMS \
             --title "$GITHUB_REF_NAME" --notes-file notes.md --verify-tag

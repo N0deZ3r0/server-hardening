@@ -5,7 +5,7 @@
 **One command turns a fresh Debian or Ubuntu VPS into a server that only lets in your key — and it will not close the old door until you have walked through the new one.**
 
 [![CI](https://github.com/N0deZ3r0/server-hardening/actions/workflows/ci.yml/badge.svg)](https://github.com/N0deZ3r0/server-hardening/actions/workflows/ci.yml)
-![version](https://img.shields.io/badge/version-2026.10.22-3b5bdb)
+![version](https://img.shields.io/badge/version-2026.10.23-3b5bdb)
 ![Debian](https://img.shields.io/badge/Debian-12%20%2F%2013-a80030)
 ![Ubuntu](https://img.shields.io/badge/Ubuntu-22.04%20%2F%2024.04%20%2F%2026.04-e95420)
 ![bash](https://img.shields.io/badge/bash-single%20file-2f9e44)
@@ -24,7 +24,7 @@ summary, can report to Telegram, and finishes with a Lynis audit. Later, `sudo h
 audits the server without changing anything. The interface is in English and Russian.
 
 ```bash
-curl -fsSLo harden.sh https://github.com/N0deZ3r0/server-hardening/releases/download/v2026.10.22/harden.sh && echo "6617af889051804999ed390626ebf0d35006e24942f3de6de3168733f0b113a1  harden.sh" | sha256sum -c - && sudo bash harden.sh
+curl -fsSLo harden.sh https://github.com/N0deZ3r0/server-hardening/releases/download/v2026.10.23/harden.sh && echo "5bdd325728af1784dbd074a0770b7293347ebff6e8b934dc9ed23813454d56a1  harden.sh" | sha256sum -c - && sudo bash harden.sh
 ```
 
 The command downloads a fixed release and checks its SHA-256 before running it: if a single
@@ -298,13 +298,40 @@ settings in `/etc/sysctl.d/99-hardening.conf` and `99-protect-links.conf`, and t
 `/root/harden-backup-<date>/`. A locked account comes back with
 `sudo usermod -U -s /bin/bash <name>`.
 
+## If this is a VPN server
+
+The setup knows nothing about VPNs: it leaves a server that accepts SSH and nothing else.
+What a VPN needs on top — none of it is run by this project's tests:
+
+- **Open the VPN's port, and only that:** `sudo ufw allow 51820/udp` for WireGuard,
+  `sudo ufw allow 443/tcp` for a proxy on 443. A control panel is better opened to your
+  address alone: `sudo ufw allow from <your IP> to any port <port> proto tcp`.
+- **A proxy** (Xray, sing-box, Shadowsocks, panels such as x-ui) needs nothing more: it
+  accepts connections and makes its own.
+- **A routed VPN** (WireGuard, OpenVPN) also needs packets forwarded. The kernel does not
+  do that until told to, and the firewall denies it by default:
+
+  ```bash
+  echo 'net.ipv4.ip_forward = 1' | sudo tee /etc/sysctl.d/99-vpn.conf && sudo sysctl --system
+  sudo ufw route allow in on wg0 out on eth0
+  ```
+
+  with your own interface names. Address translation (`MASQUERADE`) is usually added by
+  the VPN's own `PostUp`.
+- **SSH tunnels are off** (`AllowTcpForwarding no`) — see Limits for how to turn them on.
+- **Containers publish ports around UFW** — see Limits.
+- **Not answering ping** is the option meant for this case; Limits says what it hides and
+  what it does not.
+- After installing the VPN, look at the `Ports listening publicly` line of
+  `sudo harden --check`: it should show the SSH port, the VPN's, and nothing you did not expect.
+
 ## Updating
 
 On a server that is already set up, download the newer script and let it apply its
 settings — the same download and checksum, then `--refresh` instead of the setup:
 
 ```bash
-curl -fsSLo harden.sh https://github.com/N0deZ3r0/server-hardening/releases/download/v2026.10.22/harden.sh && echo "6617af889051804999ed390626ebf0d35006e24942f3de6de3168733f0b113a1  harden.sh" | sha256sum -c - && sudo bash harden.sh --refresh
+curl -fsSLo harden.sh https://github.com/N0deZ3r0/server-hardening/releases/download/v2026.10.23/harden.sh && echo "5bdd325728af1784dbd074a0770b7293347ebff6e8b934dc9ed23813454d56a1  harden.sh" | sha256sum -c - && sudo bash harden.sh --refresh
 ```
 
 `--refresh` asks nothing. It writes the kernel settings, audit rules, auto-update settings,
@@ -337,6 +364,11 @@ A script that runs as root deserves to be the one you meant to run. Each version
 published as a [release](https://github.com/N0deZ3r0/server-hardening/releases) with
 `harden.sh`, `SHA256SUMS` and a signed provenance attestation, and the install command above
 names one release and one checksum.
+
+What changed in each version, and which versions turned out not to work somewhere, is in
+[CHANGELOG.md](CHANGELOG.md); the text of each release is generated from it. A release is
+refused unless CI — which includes the whole setup on a virtual machine of every supported
+release — passed for its commit.
 
 **What the checksum proves:** the file you downloaded is byte for byte the file that was
 released — not truncated, not altered on the way, and not whatever happens to be on `main`
