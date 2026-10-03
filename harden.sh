@@ -2275,7 +2275,7 @@ run_refresh() {
 # removed. What stays: the installed packages, and the user the setup created.
 run_undo() {
   local -a dirs=(/root/harden-backup-*)
-  local first=${dirs[0]} b f u shell groups g real was now
+  local first=${dirs[0]} b f u shell groups g real was now p fw_out
   [[ -d $first/ssh ]] || die "$(T "Нет резервной копии /root/harden-backup-* с настройками SSH — откатывать не из чего" \
                                   "No backup /root/harden-backup-* with the SSH settings — nothing to undo from")"
   have_tty || die "$(T "Нужен интерактивный терминал" "An interactive terminal is required")"
@@ -2295,19 +2295,29 @@ run_undo() {
   cp -a "$first/ssh/." /etc/ssh/
   now=$(current_ssh_ports)
   CURRENT_SSH_PORTS=$was
+  # The old ports are opened before sshd moves to them: whatever happens to the firewall
+  # further down, the way back in is not left closed.
+  for p in $now; do ufw allow "$p/tcp" >/dev/null 2>&1 || true; done
   # shellcheck disable=SC2086
   if restart_sshd $now; then ok "$(T "SSH: как было, порты:" "SSH: as it was, ports:") $now"
   else warn "$(T "sshd не перезапустился со старыми настройками — смотри вывод выше" "sshd did not restart on the old settings — see above")"; fi
 
-  # Firewall: the old rules, and off if it was off
-  if [[ -d $first/ufw ]]; then
+  # Firewall: as it was before the setup — its old rules if it was on, off if it was off
+  # or not there at all. What ufw says is shown, not thrown away.
+  if [[ -d $first/ufw ]] && grep -qs '^ENABLED=yes' "$first/ufw/ufw.conf"; then
     cp -a "$first/ufw/." /etc/ufw/
-    if grep -qs '^ENABLED=yes' /etc/ufw/ufw.conf; then ufw reload >/dev/null 2>&1 || true
-    else ufw --force disable >/dev/null 2>&1 || true; fi
+    fw_out=$(ufw reload 2>&1) || warn "ufw reload: $fw_out"
+    ok "Firewall: $(T "прежние правила" "the old rules")"
   else
-    ufw --force disable >/dev/null 2>&1 || true
+    fw_out=$(ufw --force disable 2>&1) || warn "ufw disable: $fw_out"
+    if [[ -d $first/ufw ]]; then cp -a "$first/ufw/." /etc/ufw/; fi
+    if ufw status 2>/dev/null | head -1 | grep -q 'inactive'; then
+      ok "Firewall: $(T "выключен, как до настройки" "off, as before the setup")"
+    else
+      warn "$(T "Firewall не выключился ($fw_out). Порты SSH ($now) в нём открыты; выключить вручную: sudo ufw disable" \
+                "The firewall did not switch off ($fw_out). The SSH ports ($now) are open in it; to switch it off by hand: sudo ufw disable")"
+    fi
   fi
-  ok "Firewall: $(ufw status 2>/dev/null | head -1 || true)"
 
   # root: its keys back, and its password unlocked if this script locked it
   for b in "${dirs[@]}"; do

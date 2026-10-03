@@ -254,10 +254,19 @@ def answers_and_refresh(password, pub):
     for must in ("NEW_USER='alex'", f"SSH_PORT='{NEW}'", f"SSH_PUBKEY='{pub}'", "bash harden.sh"):
         if must not in r.stdout:
             fail(f"--answers does not give back: {must}")
+    # A server set up by a version that did not save its answers yet: --refresh has to
+    # read them back from what the setup left behind, and save them.
+    ssh(NEW, "alex", sudo(password, "rm /etc/harden/setup.conf"))
     r = ssh(NEW, "alex", sudo(password, "harden --refresh"), check=False, timeout=900)
     print(r.stdout)
     if r.returncode != 0 or "Settings refreshed" not in r.stdout:
         fail("--refresh did not finish")
+    r = ssh(NEW, "alex", sudo(password, "harden --answers"))
+    print(r.stdout)
+    for must in ("NEW_USER='alex'", f"SSH_PORT='{NEW}'", f"SSH_PUBKEY='{pub}'",
+                 f"ADMIN_IP='{GATEWAY}'", "DISABLE_PING='yes'", "LOCK_ROOT='yes'"):
+        if must not in r.stdout:
+            fail(f"the answers read back from the server do not include: {must}")
 
 
 def verify_undone():
@@ -272,7 +281,8 @@ def verify_undone():
         fail("after --undo the provider's account does not have its sudo back")
     r = ssh(OLD, "root", "systemctl is-active ssh; ufw status | head -1; "
                          "ls /etc/ssh/sshd_config.d/00-hardening.conf /etc/sysctl.d/99-hardening.conf "
-                         "/etc/harden /etc/fail2ban/jail.d/99-hardening.local /usr/local/bin/server-status 2>&1")
+                         "/etc/harden /etc/fail2ban/jail.d/99-hardening.local /usr/local/bin/server-status 2>&1",
+            check=False)   # ls is meant to find nothing, and says so with its exit status
     print(r.stdout)
     if "active" not in r.stdout.splitlines()[:1][0] or "Status: inactive" not in r.stdout:
         fail("after --undo: sshd is not running, or the firewall is still on")
@@ -301,8 +311,11 @@ def main():
     drive(NEW, "alex", f"sudo env {answers(pub, REUSE_USER='yes')} harden", password, "second setup")
     verify(password, "after the second setup")
 
-    drive(NEW, "alex", "sudo harden --undo", password, "undo",
-          finish=r"The setup is undone", login_check=False)
+    # What the machine looks like afterwards is printed from the same session: if the undo
+    # leaves no way in, this is the only place it can be seen from.
+    drive(NEW, "alex", "sudo harden --undo; echo '--- after the undo'; sudo -n ufw status verbose 2>&1 | head -12; "
+                       "sudo -n ss -Hltnp 2>&1 | grep sshd | grep -v 127.0.0.1 | grep -v '::1'",
+          password, "undo", finish=r"The setup is undone", login_check=False)
     verify_undone()
 
     say(f"OK: {NAME}")
