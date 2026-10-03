@@ -5,7 +5,7 @@
 **One command turns a fresh Debian or Ubuntu VPS into a server that only lets in your key — and it will not close the old door until you have walked through the new one.**
 
 [![CI](https://github.com/N0deZ3r0/server-hardening/actions/workflows/ci.yml/badge.svg)](https://github.com/N0deZ3r0/server-hardening/actions/workflows/ci.yml)
-![version](https://img.shields.io/badge/version-2026.10.9-3b5bdb)
+![version](https://img.shields.io/badge/version-2026.10.10-3b5bdb)
 ![Debian](https://img.shields.io/badge/Debian-12%20%2F%2013-a80030)
 ![Ubuntu](https://img.shields.io/badge/Ubuntu-22.04%20%2F%2024.04%20%2F%2026.04-e95420)
 ![bash](https://img.shields.io/badge/bash-single%20file-2f9e44)
@@ -24,7 +24,7 @@ summary, can report to Telegram, and finishes with a Lynis audit. Later, `sudo h
 audits the server without changing anything. The interface is in English and Russian.
 
 ```bash
-curl -fsSLo harden.sh https://github.com/N0deZ3r0/server-hardening/releases/download/v2026.10.9/harden.sh && echo "e3ca0f99ebaa808ead1945074f94705705d7b035180285653689f9332d6a33ef  harden.sh" | sha256sum -c - && sudo bash harden.sh
+curl -fsSLo harden.sh https://github.com/N0deZ3r0/server-hardening/releases/download/v2026.10.10/harden.sh && echo "8d12ea76a29eb9a1e4218cbb453b3ef2d1081d4406c7e66144da1388b073c843  harden.sh" | sha256sum -c - && sudo bash harden.sh
 ```
 
 The command downloads a fixed release and checks its SHA-256 before running it: if a single
@@ -226,7 +226,7 @@ sudo HARDEN_LANG=en NEW_USER=sysop SSH_PORT=42222 GITHUB_KEYS_USER=yourname \
 
 | Variable | Meaning |
 |---|---|
-| `HARDEN_LANG` | `en` or `ru` |
+| `HARDEN_LANG` | `en` or `ru`; without it the script asks once and remembers the answer |
 | `NEW_USER`, `SSH_PORT` | the new user and port |
 | `SSH_PUBKEY` / `GITHUB_KEYS_USER` | the key itself, or a GitHub user to fetch keys from |
 | `EXTRA_PORTS` | comma-separated, `80,443` or `51820/udp` |
@@ -269,6 +269,7 @@ server-status                          # summary
 sudo harden --check                    # audit, nothing is changed
 sudo harden --setup-telegram           # add Telegram alerts
 sudo harden --ping off                 # stop answering ping (--ping on to resume)
+sudo harden --lang ru                  # change the remembered language (en or ru)
 ```
 
 To undo a part: SSH settings live in `/etc/ssh/sshd_config.d/00-hardening.conf`, kernel

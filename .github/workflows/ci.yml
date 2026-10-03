@@ -83,12 +83,45 @@ jobs:
           done
           sudo rm /etc/apt/apt.conf.d/99ci-unattended
 
+      - name: The language is remembered, and --check never writes it
+        run: |
+          sudo rm -f /etc/harden/lang
+          # --check promises to change nothing: no saved language may appear after it.
+          sudo HARDEN_LANG=ru bash harden.sh --check >/dev/null 2>&1 || true
+          sudo timeout 120 bash harden.sh --check >/dev/null 2>&1 </dev/null || true
+          if sudo test -e /etc/harden/lang; then echo "::error::--check wrote the language"; exit 1; fi
+          # Saved once, used without HARDEN_LANG and without a question.
+          sudo bash harden.sh --lang ru | grep -F 'русский'
+          test "$(sudo cat /etc/harden/lang)" = ru
+          out=$(sudo bash harden.sh --check 2>&1 </dev/null) || true
+          echo "$out" | grep -q 'Итог:' || { echo "$out"; echo "::error::the saved language was not used"; exit 1; }
+          # Reaching the question shows up as the prompt or, with no terminal, as a /dev/tty error.
+          if echo "$out" | grep -q 'Language / \|/dev/tty'; then echo "$out"; echo "::error::asked the language again"; exit 1; fi
+          # The environment still wins over the saved value and does not overwrite it.
+          out=$(sudo HARDEN_LANG=en bash harden.sh --check 2>&1) || true
+          echo "$out" | grep -q 'Summary:'
+          test "$(sudo cat /etc/harden/lang)" = ru
+          # --lang replaces the saved value.
+          sudo bash harden.sh --lang en | grep -F 'English'
+          test "$(sudo cat /etc/harden/lang)" = en
+          # Anything but en/ru is refused and leaves the file alone; an unknown value in
+          # the file is ignored instead of being trusted.
+          if sudo bash harden.sh --lang de; then echo "::error::a wrong language was accepted"; exit 1; fi
+          if sudo bash harden.sh --lang; then echo "::error::an empty language was accepted"; exit 1; fi
+          test "$(sudo cat /etc/harden/lang)" = en
+          echo 'de' | sudo tee /etc/harden/lang >/dev/null
+          out=$(sudo timeout 120 bash harden.sh --check 2>&1 </dev/null) || true
+          echo "$out" | grep -q 'Summary:\|Итог:'
+          sudo rm -f /etc/harden/lang
+
       - name: --ping off / on changes whether ping is answered
         # Measured with a real ping, not just by reading the setting back.
         run: |
           set -x
           ping -c1 -W2 127.0.0.1 >/dev/null
           sudo HARDEN_LANG=en bash harden.sh --ping off
+          # A mode that changes the system also remembers the language it ran in.
+          test "$(sudo cat /etc/harden/lang)" = en
           test "$(sysctl -n net.ipv4.icmp_echo_ignore_all)" = 1
           test "$(stat -c %a /etc/sysctl.d/99-hardening-ping.conf)" = 644
           if ping -c1 -W2 127.0.0.1 >/dev/null; then echo "::error::ping is still answered"; exit 1; fi

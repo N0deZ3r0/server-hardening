@@ -27,7 +27,8 @@
 #    DISABLE_PING=yes|no (do not answer ICMP echo; default no),
 #    SET_USER_PASSWORD=no (root is then NOT locked)
 #
-#  Other modes: --check (audit only), --setup-telegram, --ping off|on, --install-status, --help
+#  Other modes: --check (audit only), --setup-telegram, --ping off|on, --lang en|ru,
+#               --install-status, --help. The language chosen at setup is remembered.
 # =============================================================================
 set -Eeuo pipefail
 # Files this script writes get ordinary modes whatever umask the caller has. This script
@@ -37,7 +38,7 @@ set -Eeuo pipefail
 # explicitly where it is written.
 umask 022
 
-HARDEN_VERSION="2026.10.9"
+HARDEN_VERSION="2026.10.10"
 LOG_FILE="/var/log/harden.log"
 REPORT_FILE="/root/harden-report.txt"
 BACKUP_DIR="/root/harden-backup-$(date +%Y%m%d-%H%M%S)"
@@ -88,6 +89,7 @@ harden.sh — Debian/Ubuntu server hardening
   sudo bash harden.sh --check           audit this server, change nothing (exit 1 on ✗)
   sudo bash harden.sh --setup-telegram  add Telegram alerts to a hardened server
   sudo bash harden.sh --ping off|on     stop / resume answering ping
+  sudo bash harden.sh --lang en|ru      change the remembered interface language
   sudo bash harden.sh --install-status  only install the login summary (server-status)
   sudo HARDEN_LANG=ru bash harden.sh    interface in Russian / интерфейс на русском
 
@@ -100,8 +102,18 @@ EOF
 }
 
 # ---------- 0. language, tmux, preflight ----------
+# The language picked at setup is remembered, so later `sudo harden --check` does not ask
+# again. Order: HARDEN_LANG from the environment, then the saved choice, then the question.
+LANG_FILE=/etc/harden/lang
+
 choose_language() {
   case ${HARDEN_LANG:-} in ru|en) UI=$HARDEN_LANG; export HARDEN_LANG; return 0 ;; esac
+  if [[ -r $LANG_FILE ]]; then
+    case $(head -c 2 "$LANG_FILE" 2>/dev/null) in
+      ru) UI=ru; export HARDEN_LANG=ru; return 0 ;;
+      en) UI=en; export HARDEN_LANG=en; return 0 ;;
+    esac
+  fi
   local d=1
   [[ "${LC_ALL:-}${LANG:-}" == *ru* ]] && d=2
   if [[ -r /dev/tty ]]; then
@@ -111,6 +123,13 @@ choose_language() {
     [[ $d == 2 ]] && UI=ru || UI=en
   fi
   export HARDEN_LANG=$UI
+}
+
+# Called only by modes that change the system anyway. --check promises to change nothing,
+# so it reads the saved language but never writes it.
+save_language() {
+  install -d -m 700 /etc/harden
+  echo "$UI" >"$LANG_FILE"
 }
 
 # A dropped SSH session (fresh VPS images often restart sshd in the first minutes)
@@ -1678,21 +1697,29 @@ main() {
     -V|--version) echo "harden.sh $HARDEN_VERSION"; exit 0 ;;
   esac
   [[ $EUID -eq 0 ]] || die "Run as root: sudo bash harden.sh / Запусти от root: sudo bash harden.sh"
+  if [[ ${1:-} == --lang ]]; then
+    case ${2:-} in
+      ru|en) UI=$2; save_language; ok "$(T "Язык интерфейса: русский" "Interface language: English")"; exit 0 ;;
+      *) die "Usage: sudo harden --lang en|ru / Использование: sudo harden --lang en|ru" ;;
+    esac
+  fi
   choose_language
   case ${1:-} in
     # Only the login summary, for an already hardened server
-    --install-status) install_server_status; exit 0 ;;
+    --install-status) save_language; install_server_status; exit 0 ;;
     --check) run_check || exit 1; exit 0 ;;
     --setup-telegram)
+      save_language
       TELEGRAM=yes; ask_telegram; install_notifications
       [[ $TELEGRAM == yes ]] || exit 1
       exit 0 ;;
-    --ping) set_ping "${2:-}"; exit 0 ;;
+    --ping) save_language; set_ping "${2:-}"; exit 0 ;;
     "") ;;
     *) usage; exit 2 ;;
   esac
   relaunch_in_tmux
   preflight
+  save_language
   collect_answers
   install_packages
   setup_user
