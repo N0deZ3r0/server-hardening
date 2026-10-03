@@ -5,7 +5,7 @@
 **One command turns a fresh Debian or Ubuntu VPS into a server that only lets in your key — and it will not close the old door until you have walked through the new one.**
 
 [![CI](https://github.com/N0deZ3r0/server-hardening/actions/workflows/ci.yml/badge.svg)](https://github.com/N0deZ3r0/server-hardening/actions/workflows/ci.yml)
-![version](https://img.shields.io/badge/version-2026.10.2-3b5bdb)
+![version](https://img.shields.io/badge/version-2026.10.3-3b5bdb)
 ![Debian](https://img.shields.io/badge/Debian-12%20%2F%2013-a80030)
 ![Ubuntu](https://img.shields.io/badge/Ubuntu-22.04%20%2F%2024.04%20%2F%2026.04-e95420)
 ![bash](https://img.shields.io/badge/bash-single%20file-2f9e44)
@@ -24,7 +24,7 @@ summary, can report to Telegram, and finishes with a Lynis audit. Later, `sudo h
 audits the server without changing anything. The interface is in English and Russian.
 
 ```bash
-curl -fsSLo harden.sh https://github.com/N0deZ3r0/server-hardening/releases/download/v2026.10.2/harden.sh && echo "6b440756a64e3bba3989fb415224dc795854bcb459257067318a5254c0b458c0  harden.sh" | sha256sum -c - && sudo bash harden.sh
+curl -fsSLo harden.sh https://github.com/N0deZ3r0/server-hardening/releases/download/v2026.10.3/harden.sh && echo "3ff9022d600799f64e21f690587541cde1e3f1237cacb47232e374260a36b955  harden.sh" | sha256sum -c - && sudo bash harden.sh
 ```
 
 The command downloads a fixed release and checks its SHA-256 before running it: if a single
@@ -303,9 +303,10 @@ Knowingly open, with the reason for each:
   other versions are supported by design — version checks, algorithm filtering — not by a
   run on each.
 - **Telegram alerts and `--check` have run on one live server** (Ubuntu 24.04): bot setup,
-  the test and confirmation messages, and the audit — which is how a false failure in the
-  audit itself was found and fixed. The login alert, the failure alert and the daily report
-  are so far verified in CI only, against a stand-in for the Bot API.
+  the login alert, the boot alert, the daily report and the audit. That run found two bugs
+  CI had missed — a false failure in the audit and key-lookup log lines reported as logins —
+  and both are now replayed in CI. The failure alert is verified in CI only, with a unit
+  that really fails, against a stand-in for the Bot API.
 - **Telegram sees your alerts.** Messages carry the hostname and the IP addresses of
   logins and pass through Telegram's servers. Anyone with root on the server can read the
   bot token and write to that chat as the bot — use a bot made for this server only.

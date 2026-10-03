@@ -30,7 +30,7 @@
 # =============================================================================
 set -Eeuo pipefail
 
-HARDEN_VERSION="2026.10.2"
+HARDEN_VERSION="2026.10.3"
 LOG_FILE="/var/log/harden.log"
 REPORT_FILE="/root/harden-report.txt"
 BACKUP_DIR="/root/harden-backup-$(date +%Y%m%d-%H%M%S)"
@@ -1220,8 +1220,11 @@ set -u
 journalctl -f -n 0 -o cat SYSLOG_IDENTIFIER=sshd SYSLOG_IDENTIFIER=sshd-session 2>/dev/null |
 while IFS= read -r line; do
   case $line in
-    "Accepted "*)
-      # Accepted <method> for <user> from <ip> port <port> ssh2[: <type> <fingerprint>]
+    # Accepted <method> for <user> from <ip> port <port> ssh2[: <type> <fingerprint>]
+    # The full shape is required: with LogLevel VERBOSE sshd also logs
+    # "Accepted key ED25519 SHA256:… found at /home/…/authorized_keys:1" for every key it
+    # looks up, which is not a login (seen live as "login: SHA256:… from at").
+    "Accepted "*" for "*" from "*" port "*)
       read -r -a f <<<"$line"
       /usr/local/sbin/harden-notify "🔑 SSH login: ${f[3]:-?} from ${f[5]:-?} (${f[1]:-?}${f[9]:+, ${f[9]}}${f[10]:+ ${f[10]}})" &
       ;;
@@ -1237,7 +1240,9 @@ since=$(date -d '-24 hours' '+%F %T')
 sim=$(apt-get -s -o Debug::NoLocking=1 upgrade 2>/dev/null | grep '^Inst' || true)
 upd=$(printf '%s' "$sim" | grep -c . || true)
 sec=$(printf '%s' "$sim" | grep -ci security || true)
-acc=$(journalctl --since "$since" -o cat SYSLOG_IDENTIFIER=sshd SYSLOG_IDENTIFIER=sshd-session 2>/dev/null | grep '^Accepted ' || true)
+# Logins only — not the "Accepted key … found at …" lines LogLevel VERBOSE adds per key lookup
+acc=$(journalctl --since "$since" -o cat SYSLOG_IDENTIFIER=sshd SYSLOG_IDENTIFIER=sshd-session 2>/dev/null \
+      | grep -E '^Accepted [^ ]+ for [^ ]+ from [^ ]+ port ' || true)
 nlog=$(printf '%s' "$acc" | grep -c . || true)
 who=$(printf '%s' "$acc" | awk 'NF{print $4"@"$6}' | sort | uniq -c | sort -rn | head -5 | awk '{printf "%s%s×%s", (NR>1?", ":""), $2, $1}')
 bans=0

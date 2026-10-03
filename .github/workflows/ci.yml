@@ -118,16 +118,25 @@ jobs:
           grep -qF '"chat_id": ["42"]' tg.log
           sudo /usr/local/sbin/harden-notify "ci hello"
           grep -qF ': ci hello' tg.log
-          sudo /usr/local/sbin/harden-daily-report
-          grep -qF 'Daily report' tg.log
-          # Every SSH login is reported, read from the journal
+          # Every SSH login is reported, read from the journal — and only logins. The first
+          # line is what sshd adds per key lookup under LogLevel VERBOSE; on a live server it
+          # was reported as a login "from at", so it is replayed here exactly.
           systemctl is-active harden-login-watch
           sleep 2
+          logger -t sshd "Accepted key ED25519 SHA256:ci found at /home/alex/.ssh/authorized_keys:1"
           logger -t sshd "Accepted publickey for alex from 203.0.113.9 port 5555 ssh2: ED25519 SHA256:ci"
           for _ in $(seq 20); do grep -q '203.0.113.9' tg.log && break; sleep 1; done
-          grep '203.0.113.9' tg.log
-          # Failure alerts are wired to the services that matter
+          sleep 2
+          grep -F 'SSH login: alex from 203.0.113.9 (publickey, ED25519 SHA256:ci)' tg.log
+          test "$(grep -c 'SSH login' tg.log)" = 1
+          # The daily report counts the same way
+          sudo /usr/local/sbin/harden-daily-report
+          grep -F 'Daily report' tg.log | grep -F 'SSH logins (24 h): 1 — alex@203.0.113.9×1'
+          # A failing unit really sends the alert, through the same template the drop-ins use
           systemctl show ssh.service -p OnFailure | grep -q 'harden-alert@ssh.service'
+          sudo systemd-run --quiet --unit=ci-fail --property=OnFailure=harden-alert@ci-fail.service.service /bin/false || true
+          for _ in $(seq 20); do grep -q 'ci-fail.service failed' tg.log && break; sleep 1; done
+          grep -F 'ci-fail.service failed' tg.log
           systemctl list-timers --all --no-pager | grep -q harden-daily-report
           cat tg.log
 

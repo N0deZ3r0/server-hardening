@@ -5,7 +5,7 @@
 **Одна команда превращает свежий VPS на Debian или Ubuntu в сервер, который пускает только по вашему ключу, — и не закроет старую дверь, пока вы не прошли через новую.**
 
 [![CI](https://github.com/N0deZ3r0/server-hardening/actions/workflows/ci.yml/badge.svg)](https://github.com/N0deZ3r0/server-hardening/actions/workflows/ci.yml)
-![version](https://img.shields.io/badge/version-2026.10.2-3b5bdb)
+![version](https://img.shields.io/badge/version-2026.10.3-3b5bdb)
 ![Debian](https://img.shields.io/badge/Debian-12%20%2F%2013-a80030)
 ![Ubuntu](https://img.shields.io/badge/Ubuntu-22.04%20%2F%2024.04%20%2F%2026.04-e95420)
 ![bash](https://img.shields.io/badge/bash-%D0%BE%D0%B4%D0%B8%D0%BD%20%D1%84%D0%B0%D0%B9%D0%BB-2f9e44)
@@ -25,7 +25,7 @@ CrowdSec, усиливает ядро, включает автообновлен
 Интерфейс — на русском и английском.
 
 ```bash
-curl -fsSLo harden.sh https://github.com/N0deZ3r0/server-hardening/releases/download/v2026.10.2/harden.sh && echo "6b440756a64e3bba3989fb415224dc795854bcb459257067318a5254c0b458c0  harden.sh" | sha256sum -c - && sudo bash harden.sh
+curl -fsSLo harden.sh https://github.com/N0deZ3r0/server-hardening/releases/download/v2026.10.3/harden.sh && echo "3ff9022d600799f64e21f690587541cde1e3f1237cacb47232e374260a36b955  harden.sh" | sha256sum -c - && sudo bash harden.sh
 ```
 
 Команда скачивает конкретный релиз и сверяет его SHA-256 до запуска: если отличается хоть
@@ -309,9 +309,11 @@ sudo harden --setup-telegram           # подключить уведомлен
   несколько раз; остальные версии поддерживаются по устройству скрипта — проверки версий,
   фильтрация алгоритмов, — а не прогоном на каждой.
 - **Уведомления в Telegram и `--check` запускались на одном живом сервере** (Ubuntu 24.04):
-  настройка бота, тестовое и подтверждающее сообщения и сама проверка — так и нашлась и была
-  исправлена ложная ошибка в ней. Уведомление о входе, о падении службы и ежедневная сводка
-  пока проверены только в CI, с заменителем Bot API.
+  настройка бота, уведомление о входе, о загрузке, ежедневная сводка и сама проверка. Этот
+  прогон нашёл две ошибки, которые пропустил CI, — ложный провал в проверке и служебные
+  строки журнала о поиске ключа, принятые за входы; обе теперь воспроизводятся в CI.
+  Уведомление о падении службы проверено только в CI — на юните, который действительно
+  падает, с заменителем Bot API.
 - **Telegram видит ваши уведомления.** В сообщениях есть имя сервера и IP-адреса входов, и
   они проходят через серверы Telegram. Любой, у кого есть root на сервере, может прочитать
   токен бота и писать в этот чат от его имени — заведите бота только для этого сервера.
