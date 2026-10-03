@@ -1150,7 +1150,13 @@ tg_api() {
 }
 
 ask_telegram() {  # sets TG_TOKEN / TG_CHAT_ID, or TELEGRAM=no if the admin gives up
-  local token=${TG_TOKEN:-} chat=${TG_CHAT_ID:-} bot=""
+  local token=${TG_TOKEN:-} chat=${TG_CHAT_ID:-} bot="" conf=/etc/harden/telegram.conf
+  # Re-running the setup (after an update, say) should not ask for the token again
+  if [[ -z $token && -s $conf ]] && ask_yn "$(T "Использовать уже сохранённого бота?" "Use the bot that is already saved?")" y; then
+    TG_TOKEN=$(sed -n 's/^TG_TOKEN=//p' "$conf"); TG_CHAT_ID=$(sed -n 's/^TG_CHAT_ID=//p' "$conf")
+    TELEGRAM=yes
+    return 0
+  fi
   # A direct link, not "search for BotFather": the search is full of look-alike bots
   T "  1) Откройте https://t.me/BotFather — официальный, с синей галочкой (в поиске много подделок)" \
     "  1) Open https://t.me/BotFather — the official one with the blue check mark (search shows many fakes)"; echo
@@ -1341,7 +1347,10 @@ EOF
     printf '[Unit]\nOnFailure=harden-alert@%%n.service\n' >"/etc/systemd/system/$u.service.d/harden-alert.conf"
   done
   systemctl daemon-reload
-  systemctl enable --now harden-login-watch.service harden-daily-report.timer &>/dev/null \
+  # restart, not just enable --now: on an update the watcher is already running the old
+  # script, and enable --now leaves a running unit as it is
+  systemctl enable harden-login-watch.service harden-daily-report.timer &>/dev/null \
+    && systemctl restart harden-login-watch.service harden-daily-report.timer &>/dev/null \
     || warn "$(T "Не удалось запустить службы уведомлений" "Could not start the alert services")"
   systemctl enable harden-boot-alert.service &>/dev/null || true
   /usr/local/sbin/harden-notify "✅ $(T "Уведомления включены: входы по SSH, падения служб, загрузка, сводка в" "Alerts on: SSH logins, failed services, boot, daily report at") ${TG_REPORT_TIME:-09:00} $(date +%Z)"

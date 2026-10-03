@@ -173,6 +173,10 @@ How it is built, and why:
 - Individual fail2ban bans are **not** sent: a public server collects dozens a day. They are
   counted in the daily report.
 
+After installing a newer `harden`, run `sudo harden --setup-telegram` again and answer yes
+to "Use the bot that is already saved?" — the helpers are replaced and restarted without
+asking for the token.
+
 To turn it off: `sudo systemctl disable --now harden-login-watch harden-daily-report.timer
 harden-boot-alert && sudo rm /etc/harden/telegram.conf`.
 

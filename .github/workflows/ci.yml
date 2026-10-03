@@ -138,6 +138,11 @@ jobs:
           for _ in $(seq 20); do grep -q 'ci-fail.service failed' tg.log && break; sleep 1; done
           grep -F 'ci-fail.service failed' tg.log
           systemctl list-timers --all --no-pager | grep -q harden-daily-report
+          # An update must replace the running watcher, not leave the old script in memory
+          pid1=$(systemctl show -p MainPID --value harden-login-watch)
+          sudo bash -c "source ./harden.sh; TELEGRAM=yes; TG_TOKEN=$token; TG_CHAT_ID=42; HARDEN_TG_API=http://127.0.0.1:18080; install_notifications"
+          pid2=$(systemctl show -p MainPID --value harden-login-watch)
+          test -n "$pid2" && test "$pid2" != 0 && test "$pid1" != "$pid2"
           cat tg.log
 
       - name: detect_admin_ip reads the peer column of ss
