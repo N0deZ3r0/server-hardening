@@ -5,7 +5,7 @@
 **One command turns a fresh Debian or Ubuntu VPS into a server that only lets in your key — and it will not close the old door until you have walked through the new one.**
 
 [![CI](https://github.com/N0deZ3r0/server-hardening/actions/workflows/ci.yml/badge.svg)](https://github.com/N0deZ3r0/server-hardening/actions/workflows/ci.yml)
-![version](https://img.shields.io/badge/version-2026.10.16-3b5bdb)
+![version](https://img.shields.io/badge/version-2026.10.17-3b5bdb)
 ![Debian](https://img.shields.io/badge/Debian-12%20%2F%2013-a80030)
 ![Ubuntu](https://img.shields.io/badge/Ubuntu-22.04%20%2F%2024.04%20%2F%2026.04-e95420)
 ![bash](https://img.shields.io/badge/bash-single%20file-2f9e44)
@@ -24,7 +24,7 @@ summary, can report to Telegram, and finishes with a Lynis audit. Later, `sudo h
 audits the server without changing anything. The interface is in English and Russian.
 
 ```bash
-curl -fsSLo harden.sh https://github.com/N0deZ3r0/server-hardening/releases/download/v2026.10.16/harden.sh && echo "317251e6a283560f7a8f11f34997e72ca0fe1d4d303b542b6820dce1a0bc0b45  harden.sh" | sha256sum -c - && sudo bash harden.sh
+curl -fsSLo harden.sh https://github.com/N0deZ3r0/server-hardening/releases/download/v2026.10.17/harden.sh && echo "97b7033a60904f98a92acafefd8bc88277d6826f65cf9ee8263b23db57c310b1  harden.sh" | sha256sum -c - && sudo bash harden.sh
 ```
 
 The command downloads a fixed release and checks its SHA-256 before running it: if a single
@@ -89,6 +89,10 @@ outside, so most of the script is about not making it.
 9. Whether to stop answering ping (default: no)
 
 Then a password for the new user — sudo needs it.
+
+Every yes/no question carries the same hint, with what a bare Enter does said in words:
+`[y/n, Enter — yes]` or `[y/n, Enter — no]`. `y`, `yes`, `д`, `да` and `n`, `no`, `н`, `нет`
+are understood; anything else is asked again rather than taken for a "no".
 
 ## What it does
 
@@ -297,7 +301,7 @@ On a server that is already set up, put the newer script in place of the old one
 download and checksum, without running the setup:
 
 ```bash
-curl -fsSLo harden.sh https://github.com/N0deZ3r0/server-hardening/releases/download/v2026.10.16/harden.sh && echo "317251e6a283560f7a8f11f34997e72ca0fe1d4d303b542b6820dce1a0bc0b45  harden.sh" | sha256sum -c - && sudo install -m 755 harden.sh /usr/local/sbin/harden
+curl -fsSLo harden.sh https://github.com/N0deZ3r0/server-hardening/releases/download/v2026.10.17/harden.sh && echo "97b7033a60904f98a92acafefd8bc88277d6826f65cf9ee8263b23db57c310b1  harden.sh" | sha256sum -c - && sudo install -m 755 harden.sh /usr/local/sbin/harden
 ```
 
 That replaces the commands — `--check`, `--ping`, `--lang`, `--setup-telegram` — and leaves

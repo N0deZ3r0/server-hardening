@@ -38,7 +38,7 @@ set -Eeuo pipefail
 # explicitly where it is written.
 umask 022
 
-HARDEN_VERSION="2026.10.16"
+HARDEN_VERSION="2026.10.17"
 LOG_FILE="/var/log/harden.log"
 REPORT_FILE="/root/harden-report.txt"
 BACKUP_DIR="/root/harden-backup-$(date +%Y%m%d-%H%M%S)"
@@ -85,12 +85,24 @@ ask() {  # ask "question" "default" -> REPLY
   if [[ -n $def ]]; then read -r -p "$q [$def]: " REPLY </dev/tty; REPLY=${REPLY:-$def}
   else read -r -p "$q: " REPLY </dev/tty; fi
 }
-ask_yn() {  # ask_yn "question" y|n -> 0 on yes (accepts y/yes/д/да)
+# ask_yn "question" y|n -> 0 on yes. Every yes/no question goes through here, so the hint
+# looks the same everywhere: both letters, and what a bare Enter means said in words.
+# "[Y/n]" on one question and "[y/N]" on the next read as two different formats to anyone
+# who does not know that the capital marks the default.
+ask_yn() {
   local q=$1 def=${2:-n} hint
-  [[ $def == y ]] && hint="Y/n" || hint="y/N"
-  read -r -p "$q [$hint]: " REPLY </dev/tty
-  REPLY=${REPLY:-$def}
-  [[ ${REPLY,,} == y* || ${REPLY,,} == д* ]]
+  if [[ $def == y ]]; then hint="y/n, Enter — $(T "да" "yes")"; else hint="y/n, Enter — $(T "нет" "no")"; fi
+  while :; do
+    # No terminal to read from is a "no": the questions guard changes, never the reverse
+    read -r -p "$q [$hint]: " REPLY </dev/tty || return 1
+    # Literal alternatives, not [дД] or ${REPLY,,}: in a C locale a bracket matches single
+    # bytes, and "д" and "н" start with the same byte — "нет" would have read as yes
+    case ${REPLY:-$def} in
+      y*|Y*|д*|Д*) return 0 ;;
+      n*|N*|н*|Н*) return 1 ;;
+    esac
+    echo "$(T "Ответь y (да) или n (нет)." "Please answer y (yes) or n (no).")"
+  done
 }
 # Names for AllowUsers besides the new user: existing accounts only, never root. A name
 # that does not exist would be a typo that locks someone out later.

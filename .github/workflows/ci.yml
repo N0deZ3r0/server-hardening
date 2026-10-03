@@ -79,6 +79,11 @@ jobs:
             done
           done
 
+      - name: Yes/no questions look and behave the same everywhere
+        # "[Y/n]" on one question and "[y/N]" on the next read as two formats. One function
+        # asks them all; answers are typed on a real pseudo-terminal.
+        run: bash tools/ci-ask-yn.sh
+
       - name: --check runs to the end and fails an unhardened runner
         # Under set -e any unguarded failing probe would abort before the summary line.
         run: |
