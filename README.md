@@ -307,10 +307,12 @@ Knowingly open, with the reason for each:
   other versions are supported by design — version checks, algorithm filtering — not by a
   run on each.
 - **Telegram alerts and `--check` have run on one live server** (Ubuntu 24.04): bot setup,
-  the login alert, the boot alert, the daily report and the audit. That run found two bugs
-  CI had missed — a false failure in the audit and key-lookup log lines reported as logins —
-  and both are now replayed in CI. The failure alert is verified in CI only, with a unit
-  that really fails, against a stand-in for the Bot API.
+  the login alert with merging of paired connections, the boot alert, the daily report and
+  the audit. That run found four things CI had missed — a false failure in the audit,
+  key-lookup log lines reported as logins, two alerts per connect from clients that open a
+  second connection, and `journalctl -f -n 0` dropping lines — and each is now replayed in
+  CI. The failure alert is verified in CI only, with a unit that really fails, against a
+  stand-in for the Bot API.
 - **Telegram sees your alerts.** Messages carry the hostname and the IP addresses of
   logins and pass through Telegram's servers. Anyone with root on the server can read the
   bot token and write to that chat as the bot — use a bot made for this server only.
