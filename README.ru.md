@@ -5,7 +5,7 @@
 **Одна команда превращает свежий VPS на Debian или Ubuntu в сервер, который пускает только по вашему ключу, — и не закроет старую дверь, пока вы не прошли через новую.**
 
 [![CI](https://github.com/N0deZ3r0/server-hardening/actions/workflows/ci.yml/badge.svg)](https://github.com/N0deZ3r0/server-hardening/actions/workflows/ci.yml)
-![version](https://img.shields.io/badge/version-2026.10.17-3b5bdb)
+![version](https://img.shields.io/badge/version-2026.10.18-3b5bdb)
 ![Debian](https://img.shields.io/badge/Debian-12%20%2F%2013-a80030)
 ![Ubuntu](https://img.shields.io/badge/Ubuntu-22.04%20%2F%2024.04%20%2F%2026.04-e95420)
 ![bash](https://img.shields.io/badge/bash-%D0%BE%D0%B4%D0%B8%D0%BD%20%D1%84%D0%B0%D0%B9%D0%BB-2f9e44)
@@ -25,7 +25,7 @@ CrowdSec, усиливает ядро, включает автообновлен
 Интерфейс — на русском и английском.
 
 ```bash
-curl -fsSLo harden.sh https://github.com/N0deZ3r0/server-hardening/releases/download/v2026.10.17/harden.sh && echo "97b7033a60904f98a92acafefd8bc88277d6826f65cf9ee8263b23db57c310b1  harden.sh" | sha256sum -c - && sudo bash harden.sh
+curl -fsSLo harden.sh https://github.com/N0deZ3r0/server-hardening/releases/download/v2026.10.18/harden.sh && echo "67ce5f0612a03b028b94ae34b976b4e21249655b3aff3ad214e6bde0bc2f6379  harden.sh" | sha256sum -c - && sudo bash harden.sh
 ```
 
 Команда скачивает конкретный релиз и сверяет его SHA-256 до запуска: если отличается хоть
@@ -267,7 +267,7 @@ sudo HARDEN_LANG=ru NEW_USER=sysop SSH_PORT=42222 GITHUB_KEYS_USER=вашник 
 | ОС | Debian 12/13, Ubuntu 22.04/24.04/26.04. RHEL, Alma, Rocky и CentOS не поддерживаются |
 | Виртуализация | KVM, VMware, Hyper-V, Xen — полностью. LXC/OpenVZ — частично: auditd, AppArmor и часть sysctl пропускаются |
 | Архитектура | x86_64 и ARM64 |
-| Проверено вживую | Ubuntu 24.04.5, KVM (OpenStack с cloud-init), 2 vCPU / 2 ГБ: чистый прогон, Lynis 78 → 84, после перезагрузки 86 |
+| Проверено вживую | Ubuntu 24.04.5, KVM (OpenStack с cloud-init), 2 vCPU / 2 ГБ: полный прогон с чистого образа на версии 2026.10.7 (Lynis 78 → 84, после перезагрузки 86); что было с более поздними версиями — в разделе «Ограничения» |
 | Проверяется в CI | при каждом изменении: части настройки на Ubuntu 24.04 и `--check` в контейнерах Debian 12/13 и Ubuntu 22.04/24.04/26.04 |
 
 **У облачных хостеров** (AWS, Oracle, Hetzner Cloud, GCP, Azure) есть свой firewall в
@@ -303,7 +303,7 @@ sudo harden --lang en                  # сменить запомненный �
 контрольная сумма, без запуска настройки:
 
 ```bash
-curl -fsSLo harden.sh https://github.com/N0deZ3r0/server-hardening/releases/download/v2026.10.17/harden.sh && echo "97b7033a60904f98a92acafefd8bc88277d6826f65cf9ee8263b23db57c310b1  harden.sh" | sha256sum -c - && sudo install -m 755 harden.sh /usr/local/sbin/harden
+curl -fsSLo harden.sh https://github.com/N0deZ3r0/server-hardening/releases/download/v2026.10.18/harden.sh && echo "67ce5f0612a03b028b94ae34b976b4e21249655b3aff3ad214e6bde0bc2f6379  harden.sh" | sha256sum -c - && sudo install -m 755 harden.sh /usr/local/sbin/harden
 ```
 
 Это заменяет команды — `--check`, `--ping`, `--lang`, `--setup-telegram` — и не трогает
@@ -349,6 +349,15 @@ curl -fsSLo harden.sh https://github.com/N0deZ3r0/server-hardening/releases/down
   несколько раз; остальные версии поддерживаются по устройству скрипта — проверки версий,
   фильтрация алгоритмов, — а не прогоном на каждой. На каждой поддерживаемой версии в CI
   запускается только `--check`, в контейнере.
+- **Версии с 2026.10.8 по 2026.10.17 не могли завершить настройку на облачном образе
+  Ubuntu 24.04.** Они останавливались на переключении SSH и откатывались: доступ не
+  терялся, но настройка не доводилась до конца. Скрипт не трогал процесс, который systemd
+  называл главным у службы SSH; после `systemctl enable ssh.service` systemd считал эту
+  службу остановленной и при этом по-прежнему называл её старый работающий процесс — так
+  что единственный демон, который должен был уйти, остался на порту 22. Теперь то, какой
+  демон может остаться, не берётся у systemd, службы переключаются только после остановки
+  sshd, и оба случая воспроизводятся в CI. Последний полный прогон с чистого образа был
+  на версии 2026.10.7; **исправленная версия с чистого образа ещё не запускалась.**
 - **Живые прогоны — на одном сервере** (Ubuntu 24.04, KVM): полная настройка с чистого
   образа, уведомления в Telegram, `--check`. Эти прогоны нашли девять вещей, которые пропустил
   CI, — ложный провал в проверке, служебные строки журнала о поиске ключа, принятые за

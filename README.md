@@ -5,7 +5,7 @@
 **One command turns a fresh Debian or Ubuntu VPS into a server that only lets in your key — and it will not close the old door until you have walked through the new one.**
 
 [![CI](https://github.com/N0deZ3r0/server-hardening/actions/workflows/ci.yml/badge.svg)](https://github.com/N0deZ3r0/server-hardening/actions/workflows/ci.yml)
-![version](https://img.shields.io/badge/version-2026.10.17-3b5bdb)
+![version](https://img.shields.io/badge/version-2026.10.18-3b5bdb)
 ![Debian](https://img.shields.io/badge/Debian-12%20%2F%2013-a80030)
 ![Ubuntu](https://img.shields.io/badge/Ubuntu-22.04%20%2F%2024.04%20%2F%2026.04-e95420)
 ![bash](https://img.shields.io/badge/bash-single%20file-2f9e44)
@@ -24,7 +24,7 @@ summary, can report to Telegram, and finishes with a Lynis audit. Later, `sudo h
 audits the server without changing anything. The interface is in English and Russian.
 
 ```bash
-curl -fsSLo harden.sh https://github.com/N0deZ3r0/server-hardening/releases/download/v2026.10.17/harden.sh && echo "97b7033a60904f98a92acafefd8bc88277d6826f65cf9ee8263b23db57c310b1  harden.sh" | sha256sum -c - && sudo bash harden.sh
+curl -fsSLo harden.sh https://github.com/N0deZ3r0/server-hardening/releases/download/v2026.10.18/harden.sh && echo "67ce5f0612a03b028b94ae34b976b4e21249655b3aff3ad214e6bde0bc2f6379  harden.sh" | sha256sum -c - && sudo bash harden.sh
 ```
 
 The command downloads a fixed release and checks its SHA-256 before running it: if a single
@@ -264,7 +264,7 @@ sudo HARDEN_LANG=en NEW_USER=sysop SSH_PORT=42222 GITHUB_KEYS_USER=yourname \
 | OS | Debian 12/13, Ubuntu 22.04/24.04/26.04. RHEL, Alma, Rocky and CentOS are not supported |
 | Virtualisation | KVM, VMware, Hyper-V, Xen fully. LXC/OpenVZ partly — auditd, AppArmor and some sysctl values are skipped |
 | Architecture | x86_64 and ARM64 |
-| Run live | Ubuntu 24.04.5, KVM (OpenStack with cloud-init), 2 vCPU / 2 GB: clean run, Lynis 78 → 84, and 86 after the reboot |
+| Run live | Ubuntu 24.04.5, KVM (OpenStack with cloud-init), 2 vCPU / 2 GB: a complete run from a clean image with version 2026.10.7 (Lynis 78 → 84, 86 after the reboot); see Limits for what happened to later versions |
 | Run in CI | every push: the pieces of the setup on Ubuntu 24.04, and `--check` inside Debian 12/13 and Ubuntu 22.04/24.04/26.04 containers |
 
 **Cloud providers** (AWS, Oracle, Hetzner Cloud, GCP, Azure) have a firewall of their own
@@ -301,7 +301,7 @@ On a server that is already set up, put the newer script in place of the old one
 download and checksum, without running the setup:
 
 ```bash
-curl -fsSLo harden.sh https://github.com/N0deZ3r0/server-hardening/releases/download/v2026.10.17/harden.sh && echo "97b7033a60904f98a92acafefd8bc88277d6826f65cf9ee8263b23db57c310b1  harden.sh" | sha256sum -c - && sudo install -m 755 harden.sh /usr/local/sbin/harden
+curl -fsSLo harden.sh https://github.com/N0deZ3r0/server-hardening/releases/download/v2026.10.18/harden.sh && echo "67ce5f0612a03b028b94ae34b976b4e21249655b3aff3ad214e6bde0bc2f6379  harden.sh" | sha256sum -c - && sudo install -m 755 harden.sh /usr/local/sbin/harden
 ```
 
 That replaces the commands — `--check`, `--ping`, `--lang`, `--setup-telegram` — and leaves
@@ -344,6 +344,15 @@ Knowingly open, with the reason for each:
 - **Live-tested on one system.** Ubuntu 24.04 on KVM ran end to end several times; the
   other versions are supported by design — version checks, algorithm filtering — not by a
   run on each. Only `--check` is run on every supported release, in a container in CI.
+- **Versions 2026.10.8 to 2026.10.17 could not finish a setup on an Ubuntu 24.04 cloud
+  image.** They stopped at the SSH switch and rolled back: access was never lost, and the
+  setup was never completed. The script spared the process systemd named as the SSH
+  unit's main one; after `systemctl enable ssh.service` systemd had that unit down as
+  inactive and still named its old, running listener — so the one daemon that had to go
+  kept port 22. Which daemon may stay is no longer taken from systemd, the units are
+  switched only after sshd has been stopped, and both are replayed in CI. The last
+  complete run from a clean image was version 2026.10.7; **the fixed version has not
+  been run from a clean image yet.**
 - **Live runs are on one server** (Ubuntu 24.04, KVM): the full setup from a clean image,
   Telegram alerts, `--check`. Those runs found nine things CI had missed — a false failure
   in the audit, key-lookup log lines reported as logins, two alerts per connect from clients

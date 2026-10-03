@@ -38,7 +38,7 @@ set -Eeuo pipefail
 # explicitly where it is written.
 umask 022
 
-HARDEN_VERSION="2026.10.17"
+HARDEN_VERSION="2026.10.18"
 LOG_FILE="/var/log/harden.log"
 REPORT_FILE="/root/harden-report.txt"
 BACKUP_DIR="/root/harden-backup-$(date +%Y%m%d-%H%M%S)"
@@ -1356,24 +1356,32 @@ EOF
   chmod 600 "$SSHD_DROPIN"
 }
 
-# Stop any sshd daemon still bound to the given ports, other than the unit's own.
-# Seen live: an sshd started through ssh.socket seconds before this step kept port 22
-# through both restarts of ssh.service. The new daemon logged "Bind to port 22 failed:
-# Address already in use", and the old one — still on the original config, passwords
-# and root login allowed — stayed until the reboot, kept out only by the firewall.
+# The pids of the sshd processes listening on a port, read from the kernel's socket table.
+# What systemd says about the unit is deliberately not asked — see restart_sshd.
+sshd_listener_pids() {  # sshd_listener_pids port
+  # || true: finding nothing is a normal answer, not an error for the ERR trap to report
+  ss -Hltnp "sport = :$1" 2>/dev/null | grep -oE '"sshd",pid=[0-9]+' | grep -oE '[0-9]+$' | sort -u || true
+}
+
+# Stop every sshd daemon still bound to the given ports. Called only after the unit has
+# been stopped, when nothing of sshd's may listen there any more.
+#
+# It used to spare the process systemd names as the unit's MainPID. That is the bug a live
+# run found: on a cloud image systemd had the unit down as inactive and still named its
+# old, running listener as MainPID — so the one daemon that had to go was the one spared,
+# it kept port 22, and the new daemon could not bind it. Versions 2026.10.8 to 2026.10.17
+# rolled back at this step on such images.
+#
 # Sessions are untouched: they are separate processes and hold no listening socket on
 # these ports (their X11 listeners on 127.0.0.1:60xx are not SSH ports and are not asked for).
 kill_sshd_listeners_on() {  # kill_sshd_listeners_on port...
-  local p pid main exe bin
-  main=$(systemctl show -p MainPID --value "$(ssh_service)" 2>/dev/null || true)
+  local p pid exe bin
   bin=$(readlink -f "$(command -v sshd)" 2>/dev/null || true)
   for p in "$@"; do
-    # || true: finding nothing is the normal case, not an error for the ERR trap to report
-    for pid in $(ss -Hltnp "sport = :$p" 2>/dev/null | grep -oE '"sshd",pid=[0-9]+' | grep -oE '[0-9]+$' | sort -u || true); do
-      [[ $pid == "${main:-0}" ]] && continue
+    for pid in $(sshd_listener_pids "$p"); do
       # A process that is merely called sshd is not ours to stop: it has to run the
       # system's sshd binary. " (deleted)" is how the kernel marks a daemon that outlived
-      # a package upgrade — the likeliest leftover of all, so it still counts.
+      # a package upgrade — a likely leftover, so it still counts.
       exe=$(readlink "/proc/$pid/exe" 2>/dev/null || true)
       [[ -n $bin && ${exe% (deleted)} == "$bin" ]] || continue
       kill "$pid" 2>/dev/null \
@@ -1383,10 +1391,28 @@ kill_sshd_listeners_on() {  # kill_sshd_listeners_on port...
   return 0
 }
 
-sshd_listens_on() {  # is the unit's own sshd bound to this port?
-  local main
-  main=$(systemctl show -p MainPID --value "$(ssh_service)" 2>/dev/null || true)
-  [[ -n $main && $main != 0 ]] && ss -Hltnp "sport = :$1" 2>/dev/null | grep -q "\"sshd\",pid=$main,"
+# One sshd — the same one — on every port asked for. A second pid anywhere is a leftover.
+sshd_bound_to_all() {  # sshd_bound_to_all port...
+  local p pids first=""
+  for p in "$@"; do
+    pids=$(sshd_listener_pids "$p")
+    [[ -n $pids && $pids != *$'\n'* ]] || return 1
+    [[ -n $first ]] || first=$pids
+    [[ $pids == "$first" ]] || return 1
+  done
+  return 0
+}
+
+# Who holds each port, and what systemd thinks — printed when a restart does not end the
+# way it should, so the reason is on the screen and not only in the journal.
+sshd_port_report() {  # sshd_port_report port...
+  local p svc
+  svc=$(ssh_service)
+  for p in "$@"; do
+    echo "    port $p: $(ss -Hltnp "sport = :$p" 2>/dev/null | grep -oE 'users:\(.*\)' | sort -u | paste -sd' ' - || true)"
+  done
+  echo "    $svc.service: $(systemctl is-active "$svc" 2>/dev/null || true), MainPID $(systemctl show -p MainPID --value "$svc" 2>/dev/null || true); ssh.socket: $(systemctl is-active ssh.socket 2>/dev/null || true)"
+  journalctl -u "$svc" -n 60 --no-pager -o cat 2>/dev/null | grep -E 'error|fatal|Bind to port|listening on' | tail -6 | sed 's/^/    /' || true
 }
 
 # Stopping the unit must not take the admin's session with it. Debian and Ubuntu ship
@@ -1409,28 +1435,45 @@ ensure_ssh_killmode() {
 # A clean start rather than `systemctl restart`: stop the socket and the service, clear
 # whatever daemon is left on the ports, then start. ensure_ssh_killmode sees to it that
 # the admin's own session survives the stop.
+#
+# Ubuntu 22.10+ starts sshd through ssh.socket, which ignores Port, so the first call also
+# turns socket activation off and the plain service on. The order matters, and a live run
+# paid for getting it wrong: `systemctl enable ssh.service` adds the alias sshd.service, and
+# where something already refers to that name — cloud-init does — systemd then reads the
+# running daemon's unit as inactive. `systemctl stop` is a no-op on such a unit and the old
+# listener stays. So: stop first, while systemd still knows what it is stopping, and switch
+# the units only when nothing of sshd's is listening.
 restart_sshd() {  # restart_sshd port... — the ports the new daemon must end up bound to
-  local p all
+  local svc
+  svc=$(ssh_service)
   sshd -t || return 1
   ensure_ssh_killmode
   systemctl stop ssh.socket &>/dev/null || true
-  systemctl stop "$(ssh_service)" &>/dev/null || true
+  systemctl stop "$svc" &>/dev/null || true
+  if systemctl is-enabled ssh.socket &>/dev/null; then
+    info "$(T "Отключаю ssh.socket (socket activation), включаю ssh.service" "Disabling ssh.socket (socket activation), enabling ssh.service")"
+    systemctl disable ssh.socket &>/dev/null || true
+    systemctl enable ssh.service &>/dev/null || true
+  fi
   # shellcheck disable=SC2086  # CURRENT_SSH_PORTS is a space-separated list
   kill_sshd_listeners_on "$@" $CURRENT_SSH_PORTS
   for _ in 1 2 3 4 5 6 7 8 9 10; do   # give the kernel a moment to release the ports
     ss -Hltn 2>/dev/null | grep -qE ":($(tr ' ' '|' <<<"$*"))[[:space:]]" || break
     sleep 0.5
   done
-  systemctl start "$(ssh_service)" || return 1
+  if ! systemctl start "$svc"; then
+    sshd_port_report "$@"
+    return 1
+  fi
   # "Started" is not enough: sshd carries on when it cannot bind one of several ports,
-  # which is exactly how the leftover daemon went unnoticed
+  # which is exactly how a leftover daemon went unnoticed. Asked of the kernel, not of
+  # systemd: one sshd, the same one, on every port.
   for _ in 1 2 3 4 5 6 7 8 9 10; do
-    all=yes
-    for p in "$@"; do sshd_listens_on "$p" || all=no; done
-    [[ $all == yes ]] && return 0
+    if systemctl is-active --quiet "$svc" && sshd_bound_to_all "$@"; then return 0; fi
     sleep 0.5
   done
   warn "$(T "sshd запущен, но слушает не все порты из: $*" "sshd started but is not bound to all of: $*")"
+  sshd_port_report "$@"
   return 1
 }
 
@@ -1465,12 +1508,8 @@ setup_ssh() {
     awk '$5 >= 3071' /etc/ssh/moduli >/etc/ssh/moduli.safe && [[ -s /etc/ssh/moduli.safe ]] && mv /etc/ssh/moduli.safe /etc/ssh/moduli
   fi
 
-  # Ubuntu 22.10+: ssh.socket ignores Port — switch to the plain service
-  if systemctl is-enabled ssh.socket &>/dev/null; then
-    info "$(T "Отключаю ssh.socket (socket activation), включаю ssh.service" "Disabling ssh.socket (socket activation), enabling ssh.service")"
-    systemctl disable ssh.socket &>/dev/null || true
-    systemctl enable ssh.service &>/dev/null || true
-  fi
+  # Ubuntu 22.10+ runs sshd through ssh.socket, which ignores Port. The switch to the
+  # plain service is made inside restart_sshd, after sshd has been stopped — see there.
 
   # Stage 1: old and new port side by side
   local ports="$CURRENT_SSH_PORTS"

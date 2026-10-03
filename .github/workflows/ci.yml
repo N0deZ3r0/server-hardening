@@ -299,6 +299,70 @@ jobs:
           sudo systemctl start apport 2>/dev/null || true
           test "$(sysctl -n fs.suid_dumpable)" = 0
 
+      - name: Socket-activated sshd, as on an Ubuntu 24.04 cloud image — the switch to the plain service
+        # Found live. `systemctl enable ssh.service` adds the alias sshd.service; where
+        # something already refers to that name (cloud-init does) systemd then reads the
+        # running, socket-activated daemon's unit as inactive and still names the daemon as
+        # MainPID. The setup trusted that, spared the daemon, and the new one could not
+        # bind port 22: versions 2026.10.8 to 2026.10.17 rolled back at this step.
+        run: |
+          set -x
+          sudo ssh-keygen -A
+          printf '[Unit]\nBefore=sshd.service\n[Service]\nType=oneshot\nRemainAfterExit=yes\nExecStart=/bin/true\n' \
+            | sudo tee /etc/systemd/system/ci-refers-sshd.service >/dev/null
+          # A fresh cloud image: socket on, service off, no alias, a unit referring to
+          # sshd.service, and a daemon started by the first connection.
+          fresh_image() {
+            sudo systemctl stop ssh.service ssh.socket 2>/dev/null || true
+            sudo pkill -x sshd 2>/dev/null || true
+            sudo systemctl disable ssh.service 2>/dev/null || true
+            sudo rm -f /etc/systemd/system/sshd.service
+            sudo systemctl daemon-reload
+            sudo systemctl start ci-refers-sshd.service
+            sudo systemctl enable --now ssh.socket
+            timeout 5 bash -c 'exec 3<>/dev/tcp/127.0.0.1/22; head -c 8 <&3' || true
+            for _ in 1 2 3 4 5 6 7 8 9 10; do systemctl is-active --quiet ssh && break; sleep 0.5; done
+            systemctl is-active ssh
+            old=$(systemctl show -p MainPID --value ssh)
+            test "$old" != 0
+            sudo ss -Hltnp 'sport = :22'
+          }
+          # After the switch: one new daemon on both ports, the old one gone, socket off.
+          switched() {
+            cat switch.out
+            if systemctl is-enabled --quiet ssh.socket; then echo "::error::ssh.socket is still enabled"; exit 1; fi
+            main=$(systemctl show -p MainPID --value ssh)
+            test "$main" != 0
+            test "$main" != "$old"
+            sudo ss -Hltnp 'sport = :22'   | grep -F "\"sshd\",pid=$main,"
+            sudo ss -Hltnp 'sport = :2223' | grep -F "\"sshd\",pid=$main,"
+            if sudo kill -0 "$old" 2>/dev/null; then echo "::error::the socket-activated daemon is still alive"; exit 1; fi
+            if grep -q 'not bound to all of' switch.out; then echo "::error::the switch failed"; exit 1; fi
+          }
+          printf 'Port 22\nPort 2223\n' | sudo tee /etc/ssh/sshd_config.d/00-ci.conf >/dev/null
+
+          # 1. The setup's own step on a fresh image.
+          fresh_image
+          sudo bash -c 'source ./harden.sh; CURRENT_SSH_PORTS=22; restart_sshd 22 2223' > switch.out 2>&1 || true
+          switched
+
+          # 2. The state the old order left behind: the units are switched while the daemon
+          #    is running. Whatever systemd makes of it, the switch has to come out right.
+          fresh_image
+          sudo systemctl disable ssh.socket
+          sudo systemctl enable ssh.service
+          state=$(systemctl is-active ssh || true)
+          echo "after enable: unit '$state', MainPID $(systemctl show -p MainPID --value ssh), daemon $old $(sudo kill -0 "$old" 2>/dev/null && echo alive || echo gone)"
+          if [ "$state" != active ] && sudo kill -0 "$old" 2>/dev/null; then
+            echo "::notice::reproduced: systemd reads ssh.service as '$state' while its daemon $old is running"
+          fi
+          sudo bash -c 'source ./harden.sh; CURRENT_SSH_PORTS=22; restart_sshd 22 2223' > switch.out 2>&1 || true
+          switched
+
+          sudo systemctl stop ssh
+          sudo rm -f /etc/ssh/sshd_config.d/00-ci.conf /etc/systemd/system/ci-refers-sshd.service
+          sudo systemctl daemon-reload
+
       - name: A leftover sshd does not survive the port switch
         # Replays what a live run showed: an sshd that systemd was not going to stop held
         # port 22 through both restarts, on the old config; the new daemon could not bind
@@ -351,6 +415,17 @@ jobs:
           sleep 1
           kill -0 "$fake" || { echo "::error::stopped a process that only shares the name"; exit 1; }
           kill "$fake"
+          # which daemon may stay is not taken from systemd: with MainPID pointing at the
+          # leftover itself — what a live server reported — it is stopped all the same
+          sudo /usr/sbin/sshd -o PidFile=none -p 2231
+          lying=$(sudo ss -Hltnp 'sport = :2231' | grep -oE '"sshd",pid=[0-9]+' | grep -oE '[0-9]+$' | sort -u)
+          test -n "$lying"
+          mkdir -p lie
+          printf '#!/bin/sh\ncase "$*" in *MainPID*) echo %s ;; *) exec /usr/bin/systemctl "$@" ;; esac\n' "$lying" > lie/systemctl
+          chmod +x lie/systemctl
+          sudo env "PATH=$PWD/lie:$PATH" bash -c 'source ./harden.sh; kill_sshd_listeners_on 2231'
+          sleep 1
+          if sudo kill -0 "$lying" 2>/dev/null; then echo "::error::spared the daemon systemd named as MainPID"; exit 1; fi
           # KillMode is checked, not assumed: a unit that would take sessions down with it
           # is corrected for the length of the switch
           sudo mkdir -p /etc/systemd/system/ssh.service.d
