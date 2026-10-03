@@ -525,9 +525,14 @@ EOF
 disable_apport() {
   systemctl cat apport.service &>/dev/null || return 0
   local u
+  # Stop, disable and mask as separate steps. apport.service is generated from an init
+  # script, and `disable --now` on such a unit skips the stop when the disable half fails
+  # — it stayed active through exactly that in CI. The mask is what holds across boots.
   for u in apport.service apport-autoreport.path apport-autoreport.timer apport-forward.socket; do
-    systemctl disable --now "$u" &>/dev/null || true
+    systemctl stop "$u" &>/dev/null || true
+    systemctl disable "$u" &>/dev/null || true
   done
+  systemctl mask apport.service &>/dev/null || true
   [[ -f /etc/default/apport ]] && sed -i 's/^enabled=.*/enabled=0/' /etc/default/apport
   # Stopping it normally restores both values; set them anyway rather than rely on that
   sysctl -q -w fs.suid_dumpable=0 2>/dev/null || true

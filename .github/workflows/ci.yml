@@ -145,8 +145,11 @@ jobs:
           test "$(sysctl -n fs.suid_dumpable)" = 0
           if grep -q apport /proc/sys/kernel/core_pattern; then echo "::error::core dumps still go to apport"; exit 1; fi
           test "$(systemctl is-active apport)" != active
-          test "$(systemctl is-enabled apport 2>/dev/null)" != enabled
+          test "$(systemctl is-enabled apport 2>/dev/null)" = masked
           grep -q '^enabled=0' /etc/default/apport
+          # and it cannot be started back into that state
+          sudo systemctl start apport 2>/dev/null || true
+          test "$(sysctl -n fs.suid_dumpable)" = 0
 
       - name: A leftover sshd does not survive the port switch
         # Replays what a live run showed: an sshd that systemd was not going to stop held
