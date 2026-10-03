@@ -9,7 +9,7 @@
 ![Debian](https://img.shields.io/badge/Debian-12%20%2F%2013-a80030)
 ![Ubuntu](https://img.shields.io/badge/Ubuntu-22.04%20%2F%2024.04%20%2F%2026.04-e95420)
 ![bash](https://img.shields.io/badge/bash-single%20file-2f9e44)
-![Lynis](https://img.shields.io/badge/Lynis-84%2F100-2f9e44)
+![Lynis](https://img.shields.io/badge/Lynis-86%2F100-2f9e44)
 ![license](https://img.shields.io/badge/license-MIT-4c6ef5)
 
 **English** · [Русский](README.ru.md)
@@ -74,7 +74,7 @@ outside, so most of the script is about not making it.
 
 ## What it asks
 
-1. Interface language (English / Русский)
+1. Interface language (English / Русский) — asked once and remembered; `sudo harden --lang` changes it
 2. Name of the new sudo user
 3. SSH public key — paste it, fetch it from `github.com/<user>.keys`, or copy root's
 4. New SSH port (a random one is suggested)
@@ -247,7 +247,7 @@ sudo HARDEN_LANG=en NEW_USER=sysop SSH_PORT=42222 GITHUB_KEYS_USER=yourname \
 | OS | Debian 12/13, Ubuntu 22.04/24.04/26.04. RHEL, Alma, Rocky and CentOS are not supported |
 | Virtualisation | KVM, VMware, Hyper-V, Xen fully. LXC/OpenVZ partly — auditd, AppArmor and some sysctl values are skipped |
 | Architecture | x86_64 and ARM64 |
-| Run live | Ubuntu 24.04.5, KVM (OpenStack with cloud-init), 2 vCPU / 2 GB: clean run, Lynis 78 → 84 |
+| Run live | Ubuntu 24.04.5, KVM (OpenStack with cloud-init), 2 vCPU / 2 GB: clean run, Lynis 78 → 84, and 86 after the reboot |
 
 **Cloud providers** (AWS, Oracle, Hetzner Cloud, GCP, Azure) have a firewall of their own
 in the control panel. Open the new SSH port there *before* confirming the login. If you

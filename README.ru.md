@@ -9,7 +9,7 @@
 ![Debian](https://img.shields.io/badge/Debian-12%20%2F%2013-a80030)
 ![Ubuntu](https://img.shields.io/badge/Ubuntu-22.04%20%2F%2024.04%20%2F%2026.04-e95420)
 ![bash](https://img.shields.io/badge/bash-%D0%BE%D0%B4%D0%B8%D0%BD%20%D1%84%D0%B0%D0%B9%D0%BB-2f9e44)
-![Lynis](https://img.shields.io/badge/Lynis-84%2F100-2f9e44)
+![Lynis](https://img.shields.io/badge/Lynis-86%2F100-2f9e44)
 ![license](https://img.shields.io/badge/license-MIT-4c6ef5)
 
 [English](README.md) · **Русский**
@@ -75,7 +75,7 @@ auditd мешают развить взлом и помогают потом п�
 
 ## Что спрашивает
 
-1. Язык интерфейса (English / Русский)
+1. Язык интерфейса (English / Русский) — спрашивается один раз и запоминается; сменить: `sudo harden --lang`
 2. Имя нового sudo-пользователя
 3. Публичный SSH-ключ — вставить, загрузить с `github.com/<ник>.keys` или взять у root
 4. Новый порт SSH (предлагает случайный)
@@ -250,7 +250,7 @@ sudo HARDEN_LANG=ru NEW_USER=sysop SSH_PORT=42222 GITHUB_KEYS_USER=вашник 
 | ОС | Debian 12/13, Ubuntu 22.04/24.04/26.04. RHEL, Alma, Rocky и CentOS не поддерживаются |
 | Виртуализация | KVM, VMware, Hyper-V, Xen — полностью. LXC/OpenVZ — частично: auditd, AppArmor и часть sysctl пропускаются |
 | Архитектура | x86_64 и ARM64 |
-| Проверено вживую | Ubuntu 24.04.5, KVM (OpenStack с cloud-init), 2 vCPU / 2 ГБ: чистый прогон, Lynis 78 → 84 |
+| Проверено вживую | Ubuntu 24.04.5, KVM (OpenStack с cloud-init), 2 vCPU / 2 ГБ: чистый прогон, Lynis 78 → 84, после перезагрузки 86 |
 
 **У облачных хостеров** (AWS, Oracle, Hetzner Cloud, GCP, Azure) есть свой firewall в
 панели. Откройте там новый порт SSH *до* того, как подтверждать вход. Если забыть, проверка
