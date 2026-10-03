@@ -5,7 +5,7 @@
 **One command turns a fresh Debian or Ubuntu VPS into a server that only lets in your key — and it will not close the old door until you have walked through the new one.**
 
 [![CI](https://github.com/N0deZ3r0/server-hardening/actions/workflows/ci.yml/badge.svg)](https://github.com/N0deZ3r0/server-hardening/actions/workflows/ci.yml)
-![version](https://img.shields.io/badge/version-2026.10.5-3b5bdb)
+![version](https://img.shields.io/badge/version-2026.10.6-3b5bdb)
 ![Debian](https://img.shields.io/badge/Debian-12%20%2F%2013-a80030)
 ![Ubuntu](https://img.shields.io/badge/Ubuntu-22.04%20%2F%2024.04%20%2F%2026.04-e95420)
 ![bash](https://img.shields.io/badge/bash-single%20file-2f9e44)
@@ -24,7 +24,7 @@ summary, can report to Telegram, and finishes with a Lynis audit. Later, `sudo h
 audits the server without changing anything. The interface is in English and Russian.
 
 ```bash
-curl -fsSLo harden.sh https://github.com/N0deZ3r0/server-hardening/releases/download/v2026.10.5/harden.sh && echo "08749338c7a6465cd8d88731338147d31c631240457f41433b2e08492bd4a491  harden.sh" | sha256sum -c - && sudo bash harden.sh
+curl -fsSLo harden.sh https://github.com/N0deZ3r0/server-hardening/releases/download/v2026.10.6/harden.sh && echo "dc6fb0dd32fefdad6c35841e27feadb0236c03d2018393364a84c8e602454084  harden.sh" | sha256sum -c - && sudo bash harden.sh
 ```
 
 The command downloads a fixed release and checks its SHA-256 before running it: if a single
@@ -308,11 +308,11 @@ Knowingly open, with the reason for each:
   run on each.
 - **Telegram alerts and `--check` have run on one live server** (Ubuntu 24.04): bot setup,
   the login alert with merging of paired connections, the boot alert, the daily report and
-  the audit. That run found four things CI had missed — a false failure in the audit,
+  the audit. That run found five things CI had missed — a false failure in the audit,
   key-lookup log lines reported as logins, two alerts per connect from clients that open a
-  second connection, and `journalctl -f -n 0` dropping lines — and each is now replayed in
-  CI. The failure alert is verified in CI only, with a unit that really fails, against a
-  stand-in for the Bot API.
+  second connection, `journalctl -f -n 0` dropping lines, and files written unreadable
+  under the script's own `UMASK 027` — and each is now replayed in CI. The failure alert is
+  verified in CI only, with a unit that really fails, against a stand-in for the Bot API.
 - **Telegram sees your alerts.** Messages carry the hostname and the IP addresses of
   logins and pass through Telegram's servers. Anyone with root on the server can read the
   bot token and write to that chat as the bot — use a bot made for this server only.

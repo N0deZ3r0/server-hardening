@@ -29,8 +29,14 @@
 #  Other modes: --check (audit only), --setup-telegram, --install-status, --help
 # =============================================================================
 set -Eeuo pipefail
+# Files this script writes get ordinary modes whatever umask the caller has. This script
+# itself sets UMASK 027, and `sudo harden …` from such a session passed 027 on to root:
+# drop-ins and the profile hook came out unreadable for normal users (seen live — the
+# login summary lost every service that had a drop-in). Anything private is restricted
+# explicitly where it is written.
+umask 022
 
-HARDEN_VERSION="2026.10.5"
+HARDEN_VERSION="2026.10.6"
 LOG_FILE="/var/log/harden.log"
 REPORT_FILE="/root/harden-report.txt"
 BACKUP_DIR="/root/harden-backup-$(date +%Y%m%d-%H%M%S)"
@@ -709,9 +715,9 @@ pct()  {  # free %: red below 10, yellow below 25
   else echo -e "${GREEN}$1%${NC}"; fi
 }
 svc()  {  # installed services only
-  # "Installed" is decided by the unit file on disk, not by asking systemd: in the first
-  # seconds after boot that query can fail, and every service then vanished from the list
-  # (seen live: only ufw was shown at "Uptime: 0 minutes").
+  # "Installed" is decided by the unit file on disk, not by `systemctl cat`: that fails
+  # for a normal user as soon as one drop-in of the unit is unreadable to them, and every
+  # such service then vanished from the list (seen live: only ufw was left).
   local f state found=""
   for f in /etc/systemd/system /run/systemd/system /usr/local/lib/systemd/system /usr/lib/systemd/system /lib/systemd/system; do
     [ -e "$f/$1.service" ] && { found=1; break; }
@@ -776,6 +782,7 @@ if [ -n "${SSH_CONNECTION:-}" ] && [ -z "${TMUX:-}" ] && [ -z "${SERVER_STATUS_S
   /usr/local/bin/server-status
 fi
 HOOK_EOF
+  chmod 644 /etc/profile.d/99-server-status.sh   # sourced by every user's login shell
 
   # Drop the whole stock greeting (Welcome, ESM, ads, legal) — the summary replaces it.
   # dpkg-statoverride instead of editing files: the mode survives package upgrades, and
@@ -1376,9 +1383,15 @@ EOF
   local u
   for u in ssh fail2ban crowdsec crowdsec-firewall-bouncer auditd unattended-upgrades; do
     systemctl cat "$u.service" &>/dev/null || continue
-    mkdir -p "/etc/systemd/system/$u.service.d"
+    # Modes are set explicitly, and repaired if an earlier version left them tight: a
+    # drop-in a normal user cannot read makes `systemctl cat` and `status` fail for them
+    install -d -m 755 "/etc/systemd/system/$u.service.d"
     printf '[Unit]\nOnFailure=harden-alert@%%n.service\n' >"/etc/systemd/system/$u.service.d/harden-alert.conf"
+    chmod 644 "/etc/systemd/system/$u.service.d/harden-alert.conf"
   done
+  chmod 644 /etc/systemd/system/harden-login-watch.service /etc/systemd/system/harden-alert@.service \
+            /etc/systemd/system/harden-boot-alert.service /etc/systemd/system/harden-daily-report.service \
+            /etc/systemd/system/harden-daily-report.timer
   systemctl daemon-reload
   # restart, not just enable --now: on an update the watcher is already running the old
   # script, and enable --now leaves a running unit as it is

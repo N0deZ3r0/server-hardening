@@ -112,7 +112,21 @@ jobs:
           python3 fake_tg.py &
           for _ in $(seq 20); do ss -Hltn 'sport = :18080' | grep -q . && break; sleep 0.5; done
           token=123456:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij
-          sudo bash -c "source ./harden.sh; TELEGRAM=yes; TG_TOKEN=$token; TG_CHAT_ID=42; HARDEN_TG_API=http://127.0.0.1:18080; install_notifications"
+          # Reproduce what a live server showed: the script sets UMASK 027, `sudo harden`
+          # from such a session carried 027 to root, and the drop-ins came out unreadable
+          # for normal users — after which `systemctl cat` failed for them and the login
+          # summary lost those services. First prove that this is what breaks it...
+          sudo install -d -m 750 /etc/systemd/system/ssh.service.d
+          sudo bash -c 'umask 027; printf "[Unit]\nOnFailure=harden-alert@%%n.service\n" > /etc/systemd/system/ssh.service.d/harden-alert.conf'
+          sudo systemctl daemon-reload
+          if systemctl cat ssh.service >/dev/null 2>&1; then echo "::error::an unreadable drop-in did not break systemctl cat — the diagnosis is wrong"; exit 1; fi
+          # ...then install from a 027 session: modes must come out ordinary, and repaired
+          sudo bash -c "umask 027; source ./harden.sh; TELEGRAM=yes; TG_TOKEN=$token; TG_CHAT_ID=42; HARDEN_TG_API=http://127.0.0.1:18080; install_notifications"
+          systemctl cat ssh.service >/dev/null
+          test "$(stat -c %a /etc/systemd/system/ssh.service.d)" = 755
+          test "$(stat -c %a /etc/systemd/system/ssh.service.d/harden-alert.conf)" = 644
+          test "$(stat -c %a /etc/systemd/system/harden-login-watch.service)" = 644
+          test "$(stat -c %a /usr/local/sbin/harden-notify)" = 755
           # Stored for root only, and never baked into a script or unit
           sudo stat -c '%a %U' /etc/harden/telegram.conf | grep -q '^600 root'
           if sudo grep -rq "$token" /usr/local/sbin /etc/systemd/system; then echo "::error::token found in a script or unit"; exit 1; fi
@@ -210,3 +224,8 @@ jobs:
           out=$(PATH="$PWD/nobus:$PATH" bash server-status)
           echo "$out" | sed -n '/^-.*-$/,$p' | tail -8
           echo "$out" | grep -qE '^ ?ssh +.*no answer yet'
+          # Installed from a 027 session, the summary must still be usable by a normal user
+          sudo bash -c 'umask 027; source ./harden.sh; install_server_status'
+          test "$(stat -c %a /etc/profile.d/99-server-status.sh)" = 644
+          test "$(stat -c %a /usr/local/bin/server-status)" = 755
+          /usr/local/bin/server-status | grep -E '^ ?(ssh|docker) '
