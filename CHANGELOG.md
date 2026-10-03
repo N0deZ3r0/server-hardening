@@ -7,6 +7,26 @@ where that version does not work — it is there because someone ran it and it d
 
 The text of each release on GitHub is generated from this file.
 
+## 2026.10.26
+
+Found by running what no test had run before, not by reading.
+
+- A key pressed while the setup was working answered the next question. What is typed
+  ahead stays in the terminal's buffer, and the first question after the long package
+  step is "does the login on the new port work?" — a stray "y" closed the old port with
+  nobody having tried the new one. What is typed before a question appears is now thrown
+  away. The same stray Enter also closed the tmux window with the final report in it.
+- A setup run again with the saved bot moved the daily report back to 09:00.
+- `--refresh` stopped half-way when the saved answers lacked a line (a file edited by
+  hand, or written by another version).
+- A Telegram message is tried again when the network is not there yet: the one after a
+  boot was lost when it went out before the network or DNS was up.
+- CI: the run on virtual machines now also covers Telegram alerts against a stand-in for
+  the Bot API (a real login in each release's own sshd log format, the daily report, the
+  message after a boot), a third setup with another port and a network as the admin's
+  address, a finished run left open in tmux, a key pressed ahead of the questions, and
+  `--undo` with the system files compared byte for byte with what they were.
+
 ## 2026.10.25
 
 Found by reading the script once more.

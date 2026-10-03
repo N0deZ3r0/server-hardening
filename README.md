@@ -5,7 +5,7 @@
 **One command turns a fresh Debian or Ubuntu VPS into a server that only lets in your key — and it will not close the old door until you have walked through the new one.**
 
 [![CI](https://github.com/N0deZ3r0/server-hardening/actions/workflows/ci.yml/badge.svg)](https://github.com/N0deZ3r0/server-hardening/actions/workflows/ci.yml)
-![version](https://img.shields.io/badge/version-2026.10.25-3b5bdb)
+![version](https://img.shields.io/badge/version-2026.10.26-3b5bdb)
 ![Debian](https://img.shields.io/badge/Debian-12%20%2F%2013-a80030)
 ![Ubuntu](https://img.shields.io/badge/Ubuntu-22.04%20%2F%2024.04%20%2F%2026.04-e95420)
 ![bash](https://img.shields.io/badge/bash-single%20file-2f9e44)
@@ -24,7 +24,7 @@ summary, can report to Telegram, and finishes with a Lynis audit. Later, `sudo h
 audits the server without changing anything. The interface is in English and Russian.
 
 ```bash
-curl -fsSLo harden.sh https://github.com/N0deZ3r0/server-hardening/releases/download/v2026.10.25/harden.sh && echo "f6698e89d8df729458ef9559935ca6d3ea1bda9d7c06b86c494acb79127c8e5a  harden.sh" | sha256sum -c - && sudo bash harden.sh
+curl -fsSLo harden.sh https://github.com/N0deZ3r0/server-hardening/releases/download/v2026.10.26/harden.sh && echo "059938b7df22ef8b06cc8e0109df2f09def76f89e17aa9cc9401f4da87dca9d0  harden.sh" | sha256sum -c - && sudo bash harden.sh
 ```
 
 The command downloads a fixed release and checks its SHA-256 before running it: if a single
@@ -59,7 +59,9 @@ outside, so most of the script is about not making it.
   Until then the old port still lets you in the old way — the new rules hold for the new
   port only — so a key that turns out not to work costs nothing, even if the session drops.
   On a server this script has set up before, "the old way" is the rules of that earlier
-  setup, not the provider's.
+  setup, not the provider's. And the "yes" has to be typed after the question is on the
+  screen: a key pressed while packages were being installed is thrown away, not taken for
+  an answer.
 - **Your own IP is whitelisted** in fail2ban, CrowdSec and the firewall rate limit —
   offered, not forced. Without it, a few quick test logins get the administrator banned
   (this happened during testing).
@@ -335,7 +337,7 @@ On a server that is already set up, download the newer script and let it apply i
 settings — the same download and checksum, then `--refresh` instead of the setup:
 
 ```bash
-curl -fsSLo harden.sh https://github.com/N0deZ3r0/server-hardening/releases/download/v2026.10.25/harden.sh && echo "f6698e89d8df729458ef9559935ca6d3ea1bda9d7c06b86c494acb79127c8e5a  harden.sh" | sha256sum -c - && sudo bash harden.sh --refresh
+curl -fsSLo harden.sh https://github.com/N0deZ3r0/server-hardening/releases/download/v2026.10.26/harden.sh && echo "059938b7df22ef8b06cc8e0109df2f09def76f89e17aa9cc9401f4da87dca9d0  harden.sh" | sha256sum -c - && sudo bash harden.sh --refresh
 ```
 
 `--refresh` asks nothing. It writes the kernel settings, audit rules, auto-update settings,
@@ -410,9 +412,9 @@ Knowingly open, with the reason for each:
   the setup had never worked on Ubuntu 26.04 — sudo there is sudo-rs, which does not know
   one of the settings written — and had stopped working on Debian 12 in 2026.10.15,
   on a `cp` option that is broken in that release's coreutils. Both had been listed as
-  supported. What the VM runs leave out: Telegram, Lynis, IPv6, a second run with another
-  port or another user, and
-  whatever a real provider's image does differently from the stock cloud image.
+  supported. What the VM runs leave out: Telegram itself (the alerts go to a stand-in for
+  its API), Lynis, IPv6, a second run with another user, and whatever a real provider's
+  image does differently from the stock cloud image.
 - **Versions 2026.10.8 to 2026.10.17 could not finish a setup on an Ubuntu 24.04 cloud
   image.** They stopped at the SSH switch and rolled back: access was never lost, and the
   setup was never completed. systemd had the SSH unit down as inactive while its listener

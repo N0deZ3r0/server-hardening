@@ -9,10 +9,13 @@ here=$(cd "$(dirname "$0")/.." && pwd)
 fail() { echo "FAIL: $*" >&2; exit 1; }
 
 # run ANSWERS DEFAULT LANG LOCALE -> everything the terminal showed
+# The answers are typed one at a time, each after its question has had time to appear:
+# what is typed before a question is on the screen is thrown away, on purpose (see the end).
 run() {
-  printf '%b' "$1" | LC_ALL=$4 script -qec \
-    "bash -c 'source \"$here/harden.sh\"; UI=$3; if ask_yn Question $2; then echo RESULT=yes; else echo RESULT=no; fi'" \
-    /dev/null | tr -d '\r'
+  ( sleep 0.7; printf '%b' "$1" | while IFS= read -r a; do printf '%s\n' "$a"; sleep 0.7; done || true ) \
+    | LC_ALL=$4 script -qec \
+        "bash -c 'source \"$here/harden.sh\"; UI=$3; if ask_yn Question $2; then echo RESULT=yes; else echo RESULT=no; fi'" \
+        /dev/null | tr -d '\r'
 }
 
 # expect WANT ANSWERS DEFAULT [LANG] [LOCALE]
@@ -61,5 +64,17 @@ out=$(run 'maybe\ny\n' n en C.UTF-8)
 out=$(run 'ok\nн\n' y ru C.UTF-8)
 [[ $out == *'Ответь y (да) или n (нет).'* && $out == *'RESULT=no'* ]] \
   || { printf '%s\n' "$out"; fail "an unclear answer was not asked again (Russian)"; }
+
+# What is typed before the question appears is not an answer to it. A key pressed while
+# packages were being installed used to answer the next question — which is "does the
+# login on the new port work?", and a stray "y" there closes the old port with nobody
+# having tried the new one. Here "y" is in the terminal before the question is asked, a
+# whole line and then half a line; the answer given afterwards is "n".
+for ahead in 'y\n' 'y' '\n\ny\n'; do
+  out=$( ( printf '%b' "$ahead"; sleep 2.5; printf 'n\n'; sleep 0.7 ) | LC_ALL=C.UTF-8 script -qec \
+          "bash -c 'source \"$here/harden.sh\"; UI=en; sleep 1; if ask_yn Question y; then echo RESULT=yes; else echo RESULT=no; fi'" \
+          /dev/null | tr -d '\r' )
+  [[ $out == *'RESULT=no'* ]] || { printf '%s\n' "$out"; fail "what was typed before the question ('$ahead') was taken for the answer"; }
+done
 
 echo "OK: yes/no questions"

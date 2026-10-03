@@ -244,8 +244,14 @@ def answers(pub, tmux=False, **more):
 
 
 def drive(port, user, command, password, stage, finish=r"Done!", login_check=True, term="xterm-256color",
-          at_question=None, close_tmux=True):
-    """Runs a command on a terminal and answers what a person would be asked."""
+          at_question=None, close_tmux=True, typeahead=False):
+    """Runs a command on a terminal and answers what a person would be asked.
+
+    Each question is answered once. tmux repaints the screen now and then, the question
+    appears in the output a second time, and a second "y" sent for it sat in the terminal
+    until the next question — "does the login on the new port work?" — took it for its
+    answer. That was this test's mistake, and it is how the script's own was found: it
+    should never have taken it. `typeahead` now makes that mistake on purpose."""
     say(f"{stage}: {user}@{port}")
     # A real terminal type and a wide window: the setup moves itself into tmux where the
     # image has it, and tmux draws for the terminal it is told about.
@@ -268,10 +274,18 @@ def drive(port, user, command, password, stage, finish=r"Done!", login_check=Tru
     done = False
     confirmed = not login_check
     in_tmux = False
+    answered = set()
     while True:
         i = child.expect(patterns)
+        key = child.match.group(1) if i == 0 else i
+        if i in (0, 1, 2, 3, 6, 9) and key in answered:
+            continue        # the same question, painted again
+        answered.add(key)
         if i == 0:
             child.sendline("y")
+            if typeahead and key == "Start":
+                # a key pressed once too often, minutes before the questions that matter
+                child.sendline("y")
         elif i in (1, 2, 6):
             child.sendline(password)
         elif i == 3:
@@ -582,8 +596,11 @@ def main():
     # has tmux the script moves itself into it — and from a terminal type the image has no
     # description of, as kitty or ghostty are on a fresh server: tmux refuses to start on
     # one, and the setup used to end right there.
+    # And with a "y" typed ahead, right after "Start?": it must not become the answer to
+    # the question about the login — the checks made at that question would find the old
+    # port closed.
     in_tmux = drive(OLD, "root", f"{answers(pub, tmux=True)} bash /root/harden.sh", password, "first setup",
-                    term="xterm-nosuchterm", at_question=first_setup_question)
+                    term="xterm-nosuchterm", at_question=first_setup_question, typeahead=True)
     if has_tmux and not in_tmux:
         fail("the image has tmux, but the setup did not move itself into it")
     verify(password, "after the setup")

@@ -39,7 +39,7 @@ set -Eeuo pipefail
 # explicitly where it is written.
 umask 022
 
-HARDEN_VERSION="2026.10.26-dev"
+HARDEN_VERSION="2026.10.26"
 LOG_FILE="/var/log/harden.log"
 REPORT_FILE="/root/harden-report.txt"
 BACKUP_DIR="/root/harden-backup-$(date +%Y%m%d-%H%M%S)"
@@ -74,6 +74,17 @@ warn_box() {
 # Is there a terminal to ask on? `[[ -r /dev/tty ]]` is true without one too — the device
 # node is always readable — so only opening it tells.
 have_tty() { { : </dev/tty; } 2>/dev/null; }
+# What was typed before a question appeared is not an answer to it. A key pressed during
+# the minutes of package installation stays in the terminal's buffer, and the next question
+# took it — and the next question is "does the login on the new port work?", where a stray
+# "y" closes the old port with nobody having tried the new one. Found by a test that
+# pressed "y" once too often. -n makes read take the characters as they are, a line that
+# was only half typed included.
+discard_typeahead() {
+  local _
+  while read -r -s -t 0.1 -n 1000 _ </dev/tty; do :; done 2>/dev/null
+  return 0
+}
 # Not every account lives in /home/<name> (a reused existing user may not)
 home_of() { getent passwd "$1" 2>/dev/null | cut -d: -f6 || true; }
 
@@ -83,6 +94,7 @@ trap 'echo "${C_R}[✗] $(T "Ошибка в строке" "Error at line") $LIN
 # Questions are read from the terminal, so this also works as `curl ... | bash`
 ask() {  # ask "question" "default" -> REPLY
   local q=$1 def=${2:-}
+  discard_typeahead
   if [[ -n $def ]]; then read -r -p "$q [$def]: " REPLY </dev/tty; REPLY=${REPLY:-$def}
   else read -r -p "$q: " REPLY </dev/tty; fi
 }
@@ -94,6 +106,7 @@ ask_yn() {
   local q=$1 def=${2:-n} hint
   if [[ $def == y ]]; then hint="y/n, Enter — $(T "да" "yes")"; else hint="y/n, Enter — $(T "нет" "no")"; fi
   while :; do
+    discard_typeahead
     # No terminal to read from is a "no": the questions guard changes, never the reverse
     read -r -p "$q [$hint]: " REPLY </dev/tty || return 1
     # Literal alternatives, not [дД] or ${REPLY,,}: in a C locale a bracket matches single
@@ -204,7 +217,10 @@ relaunch_in_tmux() {
     # in ps; inside tmux the script asks for it again (hidden input)
     [[ -n ${!v+x} ]] && inner+=" $v=$(printf '%q' "${!v}")"
   done
-  inner+=" bash $(printf '%q' "$script"); touch $done_flag; echo; read -rp $(printf '%q' "$(T 'Enter — закрыть окно tmux' 'Press Enter to close tmux')") _"
+  # ...and before the last line waits for Enter, what was typed during the run is thrown
+  # away: an Enter pressed once too often closed the window with the final report in it
+  inner+=" bash $(printf '%q' "$script"); touch $done_flag; echo; while read -rs -t 0.1 -n 1000 _; do :; done"
+  inner+="; read -rp $(printf '%q' "$(T 'Enter — закрыть окно tmux' 'Press Enter to close tmux')") _"
   info "$(T "Запускаю внутри tmux. Если SSH оборвётся — зайди снова и выполни: tmux attach -t harden" \
             "Running inside tmux. If SSH drops, log in again and run: tmux attach -t harden")"
   sleep 2
@@ -613,7 +629,8 @@ EOF
   else
     T "Задай пароль для $NEW_USER — он нужен для sudo (минимум 12 символов, 3 типа символов)." \
       "Set a password for $NEW_USER — sudo needs it (12+ characters, 3 character classes)."; echo
-    until passwd "$NEW_USER" </dev/tty >/dev/tty 2>&1; do warn "$(T "Попробуй ещё раз" "Try again")"; done
+    discard_typeahead
+    until passwd "$NEW_USER" </dev/tty >/dev/tty 2>&1; do warn "$(T "Попробуй ещё раз" "Try again")"; discard_typeahead; done
     USER_HAS_PASSWORD=yes
   fi
 
@@ -1912,6 +1929,7 @@ ask_telegram() {  # sets TG_TOKEN / TG_CHAT_ID, or TELEGRAM=no if the admin give
     "     Send /newbot, give a name and a username (must end in bot), copy the token"; echo
   until [[ $token =~ ^[0-9]{5,}:[A-Za-z0-9_-]{30,}$ ]] && tg_api "$token" getMe | grep -q '"ok":true'; do
     [[ -n $token ]] && warn "$(T "Telegram не принял токен" "Telegram rejected the token")"
+    discard_typeahead   # an Enter typed ahead would read as "skip", and Telegram would be dropped without a word
     read -r -s -p "$(T "Токен бота (ввод скрыт, пусто — пропустить): " "Bot token (hidden, empty to skip): ")" token </dev/tty; echo
     [[ -z $token ]] && { TELEGRAM=no; return 0; }
   done
@@ -1919,6 +1937,7 @@ ask_telegram() {  # sets TG_TOKEN / TG_CHAT_ID, or TELEGRAM=no if the admin give
   if [[ ! $chat =~ ^-?[0-9]+$ ]]; then
     T "  2) Откройте https://t.me/$bot, нажмите Start (или отправьте любое сообщение) и нажмите Enter здесь" \
       "  2) Open https://t.me/$bot, press Start (or send any message), then press Enter here"; echo
+    discard_typeahead
     read -r _ </dev/tty
     chat=$(tg_api "$token" getUpdates | grep -o '"chat":{"id":-\{0,1\}[0-9]*' | tail -1 | grep -o -- '-\{0,1\}[0-9]*$' || true)
     until [[ $chat =~ ^-?[0-9]+$ ]]; do
