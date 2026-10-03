@@ -20,7 +20,7 @@
 #  Environment (optional, otherwise the script asks):
 #    HARDEN_LANG=en|ru, NEW_USER, SSH_PORT, SSH_PUBKEY, GITHUB_KEYS_USER,
 #    EXTRA_PORTS="80,443", ADMIN_IP (empty = none), AUTO_REBOOT=yes|no,
-#    REBOOT_TIME=04:00, LOCK_ROOT=yes|no, LOCK_OTHER_USERS=yes|no,
+#    REBOOT_TIME=04:00, LOCK_ROOT=yes|no, LOCK_OTHER_USERS=yes|no, SSH_EXTRA_USERS="a b",
 #    INSTALL_CROWDSEC=yes|no, RUN_LYNIS=yes|no, REBOOT_NOW=yes|no,
 #    SERVER_STATUS=yes|no, REUSE_USER=yes|no (use an existing account),
 #    TELEGRAM=yes|no, TG_TOKEN, TG_CHAT_ID, TG_REPORT_TIME=09:00,
@@ -38,7 +38,7 @@ set -Eeuo pipefail
 # explicitly where it is written.
 umask 022
 
-HARDEN_VERSION="2026.10.12"
+HARDEN_VERSION="2026.10.13"
 LOG_FILE="/var/log/harden.log"
 REPORT_FILE="/root/harden-report.txt"
 BACKUP_DIR="/root/harden-backup-$(date +%Y%m%d-%H%M%S)"
@@ -86,6 +86,20 @@ ask_yn() {  # ask_yn "question" y|n -> 0 on yes (accepts y/yes/д/да)
   REPLY=${REPLY:-$def}
   [[ ${REPLY,,} == y* || ${REPLY,,} == д* ]]
 }
+# Names for AllowUsers besides the new user: existing accounts only, never root. A name
+# that does not exist would be a typo that locks someone out later.
+valid_extra_users() {
+  local u out=""
+  for u in ${1//,/ }; do
+    if [[ $u =~ ^[a-z_][a-z0-9_-]*$ && $u != root ]] && id -u "$u" &>/dev/null; then
+      [[ $u == "${NEW_USER:-}" ]] || out+="$u "
+    else
+      warn "$(T "Пропущен пользователь для SSH:" "SSH user skipped:") $u" >&2
+    fi
+  done
+  printf '%s' "${out% }"
+}
+
 env_yn() {  # env_yn VAR "question" default -> 0 on yes; an exported VAR skips the question
   local q=$2 def=$3 val=${!1:-}
   if [[ -n $val ]]; then [[ ${val,,} == y* ]]; return; fi
@@ -155,7 +169,7 @@ relaunch_in_tmux() {
   for v in HARDEN_LANG NEW_USER SSH_PORT SSH_PUBKEY GITHUB_KEYS_USER EXTRA_PORTS AUTO_REBOOT REBOOT_TIME \
            LOCK_ROOT LOCK_OTHER_USERS INSTALL_CROWDSEC RUN_LYNIS REBOOT_NOW SET_USER_PASSWORD ADMIN_IP \
            SERVER_STATUS REUSE_USER TELEGRAM TG_CHAT_ID TG_REPORT_TIME HARDEN_TG_API DISABLE_PING \
-           SSH_CLIENT; do
+           SSH_EXTRA_USERS SSH_CLIENT; do
     # TG_TOKEN is deliberately not passed: it would sit in tmux's command line, readable
     # in ps; inside tmux the script asks for it again (hidden input)
     [[ -n ${!v+x} ]] && inner+=" $v=$(printf '%q' "${!v}")"
@@ -350,6 +364,23 @@ collect_answers() {
   else
     LOCK_OTHER_USERS=no
   fi
+
+  # SSH gets "AllowUsers", so leaving the other accounts unlocked would still shut them
+  # out of SSH without a word. Say it, and let the admin keep them in.
+  if [[ -n ${SSH_EXTRA_USERS+x} ]]; then
+    SSH_EXTRA_USERS=$(valid_extra_users "$SSH_EXTRA_USERS")
+  elif [[ -n $OTHER_USERS && $LOCK_OTHER_USERS == no ]]; then
+    warn "$(T "По SSH после настройки сможет входить только $NEW_USER (AllowUsers) — даже те аккаунты, что не блокируются, по SSH не войдут." \
+              "After the setup SSH accepts only $NEW_USER (AllowUsers) — accounts that are not locked still cannot log in over SSH.")"
+    if ask_yn "$(T "Оставить вход по SSH (по ключу) ещё и для: $OTHER_USERS?" "Keep SSH login (by key) for these as well: $OTHER_USERS?")" n; then
+      SSH_EXTRA_USERS=$(valid_extra_users "$OTHER_USERS")
+    else SSH_EXTRA_USERS=""; fi
+  else
+    SSH_EXTRA_USERS=""
+  fi
+  if [[ -n $SSH_EXTRA_USERS && $LOCK_OTHER_USERS == yes ]]; then
+    warn "$(T "SSH_EXTRA_USERS пропущен: эти аккаунты блокируются" "SSH_EXTRA_USERS ignored: those accounts are being locked")"; SSH_EXTRA_USERS=""
+  fi
   if env_yn INSTALL_CROWDSEC "$(T "Установить CrowdSec (коллективный IPS, дополнение к fail2ban)?" \
                                   "Install CrowdSec (crowd-sourced IPS on top of fail2ban)?")" n; then INSTALL_CROWDSEC=yes; else INSTALL_CROWDSEC=no; fi
   if env_yn RUN_LYNIS "$(T "Запустить в конце аудит Lynis?" "Run a Lynis audit at the end?")" y; then RUN_LYNIS=yes; else RUN_LYNIS=no; fi
@@ -374,6 +405,7 @@ collect_answers() {
   echo "  $(T "Автоперезагрузка:  " "Auto reboot:       ") $AUTO_REBOOT ${REBOOT_TIME:-}"
   echo "  $(T "Блок. пароля root: " "Lock root password:") $LOCK_ROOT"
   [[ -n $OTHER_USERS ]] && echo "  $(T "Блок. аккаунтов:   " "Lock accounts:     ") $LOCK_OTHER_USERS ($OTHER_USERS)"
+  echo "  $(T "Вход по SSH:       " "SSH login for:     ") $NEW_USER${SSH_EXTRA_USERS:+ $SSH_EXTRA_USERS}"
   echo "  CrowdSec:           $INSTALL_CROWDSEC"
   echo "  Telegram:           $TELEGRAM${TG_CHAT_ID:+ (chat $TG_CHAT_ID)}"
   echo "  $(T "Ответ на ping:     " "Answer ping:       ") $([[ $DISABLE_PING == yes ]] && T "нет" "no" || T "да" "yes")"
@@ -1127,7 +1159,7 @@ HostKey /etc/ssh/ssh_host_rsa_key
 
 # --- Authentication: keys only, no root ---
 PermitRootLogin no
-AllowUsers $NEW_USER
+AllowUsers $NEW_USER${SSH_EXTRA_USERS:+ $SSH_EXTRA_USERS}
 PubkeyAuthentication yes
 AuthenticationMethods publickey
 PasswordAuthentication no
@@ -1183,12 +1215,18 @@ EOF
 # Sessions are untouched: they are separate processes and hold no listening socket on
 # these ports (their X11 listeners on 127.0.0.1:60xx are not SSH ports and are not asked for).
 kill_sshd_listeners_on() {  # kill_sshd_listeners_on port...
-  local p pid main
+  local p pid main exe bin
   main=$(systemctl show -p MainPID --value "$(ssh_service)" 2>/dev/null || true)
+  bin=$(readlink -f "$(command -v sshd)" 2>/dev/null || true)
   for p in "$@"; do
     # || true: finding nothing is the normal case, not an error for the ERR trap to report
     for pid in $(ss -Hltnp "sport = :$p" 2>/dev/null | grep -oE '"sshd",pid=[0-9]+' | grep -oE '[0-9]+$' | sort -u || true); do
       [[ $pid == "${main:-0}" ]] && continue
+      # A process that is merely called sshd is not ours to stop: it has to run the
+      # system's sshd binary. " (deleted)" is how the kernel marks a daemon that outlived
+      # a package upgrade — the likeliest leftover of all, so it still counts.
+      exe=$(readlink "/proc/$pid/exe" 2>/dev/null || true)
+      [[ -n $bin && ${exe% (deleted)} == "$bin" ]] || continue
       kill "$pid" 2>/dev/null \
         && info "$(T "Остановлен оставшийся sshd (pid $pid) на порту $p" "Stopped a leftover sshd (pid $pid) on port $p")"
     done
@@ -1202,12 +1240,30 @@ sshd_listens_on() {  # is the unit's own sshd bound to this port?
   [[ -n $main && $main != 0 ]] && ss -Hltnp "sport = :$1" 2>/dev/null | grep -q "\"sshd\",pid=$main,"
 }
 
+# Stopping the unit must not take the admin's session with it. Debian and Ubuntu ship
+# ssh.service with KillMode=process, which stops the listener and nothing else. That is
+# checked rather than assumed: if this unit says otherwise, a drop-in in /run says it for
+# now ("zz-" so it is read last) and is gone at the next boot.
+ensure_ssh_killmode() {
+  local svc
+  svc=$(ssh_service)
+  [[ $(systemctl show -p KillMode --value "$svc" 2>/dev/null) == process ]] && return 0
+  install -d -m 755 "/run/systemd/system/$svc.service.d"
+  printf '[Service]\nKillMode=process\n' >"/run/systemd/system/$svc.service.d/zz-harden-killmode.conf"
+  systemctl daemon-reload
+  [[ $(systemctl show -p KillMode --value "$svc" 2>/dev/null) == process ]] \
+    || warn "$(T "KillMode у $svc не process — при остановке службы SSH-сессия может оборваться; настройка продолжится в tmux" \
+                "KillMode of $svc is not process — stopping the service may drop the SSH session; the setup carries on in tmux")"
+  return 0
+}
+
 # A clean start rather than `systemctl restart`: stop the socket and the service, clear
-# whatever daemon is left on the ports, then start. KillMode=process in ssh.service means
+# whatever daemon is left on the ports, then start. ensure_ssh_killmode sees to it that
 # the admin's own session survives the stop.
 restart_sshd() {  # restart_sshd port... — the ports the new daemon must end up bound to
   local p all
   sshd -t || return 1
+  ensure_ssh_killmode
   systemctl stop ssh.socket &>/dev/null || true
   systemctl stop "$(ssh_service)" &>/dev/null || true
   # shellcheck disable=SC2086  # CURRENT_SSH_PORTS is a space-separated list
@@ -1638,10 +1694,11 @@ EOF
 
 # ---------- --check: audit only, nothing is changed ----------
 CHK_PASS=0; CHK_WARN=0; CHK_FAIL=0
-chk() {  # chk pass|warn|fail "text"
+chk() {  # chk pass|warn|fail|info "text" — info is shown and not counted: a fact, not a verdict
   case $1 in
     pass) CHK_PASS=$((CHK_PASS + 1)); echo "  ${C_G}✓${C_0} $2" ;;
     warn) CHK_WARN=$((CHK_WARN + 1)); echo "  ${C_Y}!${C_0} $2" ;;
+    info) echo "  ${C_B}·${C_0} $2" ;;
     *)    CHK_FAIL=$((CHK_FAIL + 1)); echo "  ${C_R}✗${C_0} $2" ;;
   esac
 }
@@ -1654,10 +1711,15 @@ run_check() {
 
   echo; echo "${C_BOLD}SSH${C_0}"
   # sshd -T refuses to run without its runtime directory, which is missing whenever sshd
-  # is socket-activated and idle (Ubuntu 24.04). It lives in /run (tmpfs), so creating it
-  # leaves nothing behind.
-  [[ -d /run/sshd ]] || install -d -m 755 /run/sshd
-  cfg=$(sshd -T 2>&1) || { v=$(head -1 <<<"$cfg"); cfg=""; }
+  # is socket-activated and idle (Ubuntu 24.04). The check changes nothing, so it does not
+  # create it: sshd -T then runs in a mount namespace of its own, where a throwaway /run
+  # exists for that one command and is seen by nothing else.
+  if [[ -d /run/sshd ]]; then
+    cfg=$(sshd -T 2>&1) || { v=$(head -1 <<<"$cfg"); cfg=""; }
+  else
+    cfg=$(unshare --mount sh -c 'mount -t tmpfs tmpfs /run && mkdir /run/sshd && exec sshd -T' 2>&1) \
+      || { v=$(head -1 <<<"$cfg"); cfg=""; }
+  fi
   sv() { awk -v k="$1" '$1==k{$1=""; sub(/^ /,""); print; exit}' <<<"$cfg"; }
   if [[ -z $cfg ]]; then
     chk fail "$(T "sshd -T не отработал — конфиг SSH не читается" "sshd -T failed — the SSH config cannot be read"): ${v:-?}"
@@ -1719,10 +1781,12 @@ run_check() {
   # Everything bound beyond loopback; UDP 68 is the DHCP client, not a service
   list=$(ss -Hltnu 2>/dev/null | awk '{print $1, $5}' | grep -vE ' (127\.|\[::1\]|\[::ffff:127\.)' \
          | grep -vE '^udp .*:68$' | sed -E 's/.*:([0-9]+)$/\1/' | sort -un | paste -sd' ' - || true)
-  chk pass "$(T "Порты, слушающие снаружи:" "Ports listening publicly:") ${list:-$(T "нет" "none")}"
+  # Whether a port should be open is the admin's call — the check cannot know, so it
+  # lists them without a mark of approval
+  chk info "$(T "Порты, слушающие снаружи:" "Ports listening publicly:") ${list:-$(T "нет" "none")}"
   # Informational either way: answering ping is not a weakness
   [[ $(sysctl -n net.ipv4.icmp_echo_ignore_all 2>/dev/null) == 1 ]] \
-    && chk pass "$(T "Ping: сервер не отвечает" "Ping: not answered")" || chk pass "$(T "Ping: сервер отвечает (отключить: sudo harden --ping off)" "Ping: answered (to stop: sudo harden --ping off)")"
+    && chk info "$(T "Ping: сервер не отвечает" "Ping: not answered")" || chk info "$(T "Ping: сервер отвечает (отключить: sudo harden --ping off)" "Ping: answered (to stop: sudo harden --ping off)")"
   systemctl is-active --quiet fail2ban && fail2ban-client status sshd &>/dev/null \
     && chk pass "$(T "fail2ban защищает SSH" "fail2ban protects SSH")" || chk fail "$(T "fail2ban не защищает SSH" "fail2ban does not protect SSH")"
   if systemctl cat crowdsec.service &>/dev/null; then
@@ -1737,6 +1801,11 @@ run_check() {
   out=$(apt-config dump 2>/dev/null || true)
   grep -q 'APT::Periodic::Unattended-Upgrade "1"' <<<"$out" \
     && chk pass "$(T "Автообновления безопасности" "Automatic security updates")" || chk fail "$(T "Автообновления выключены" "Automatic updates off")"
+  # Updates keep a locally edited config and save the packaged one beside it. Each such
+  # file is a config whose new defaults nobody has looked at yet.
+  n=$(find /etc -xdev \( -name '*.dpkg-dist' -o -name '*.dpkg-new' -o -name '*.ucf-dist' \) 2>/dev/null | wc -l || true)
+  (( n == 0 )) && chk pass "$(T "Нет непросмотренных новых конфигов от пакетов" "No new package configs waiting for review")" \
+    || chk warn "$(T "Новые конфиги от пакетов не просмотрены:" "New package configs not reviewed:") $n (find /etc -name '*.dpkg-dist' -o -name '*.dpkg-new')"
   n=$(apt-get -s -o Debug::NoLocking=1 upgrade 2>/dev/null | grep -c '^Inst' || true)
   (( n == 0 )) && chk pass "$(T "Все обновления установлены" "All updates installed")" || chk warn "$(T "Ожидают установки:" "Pending updates:") $n"
   [[ -f /var/run/reboot-required ]] && chk warn "$(T "Нужна перезагрузка" "Reboot required")" || chk pass "$(T "Перезагрузка не нужна" "No reboot needed")"

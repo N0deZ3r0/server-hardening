@@ -100,6 +100,27 @@ jobs:
           done
           sudo rm /etc/apt/apt.conf.d/99ci-unattended
 
+      - name: --check changes nothing, and shows facts as facts
+        run: |
+          # sshd -T needs /run/sshd, which is absent while sshd is socket-activated and idle.
+          # The check used to create it; it has to read the config without doing so.
+          sudo systemctl stop ssh.socket ssh.service 2>/dev/null || true
+          sudo rm -rf /run/sshd
+          sudo ssh-keygen -A
+          out=$(sudo HARDEN_LANG=en bash harden.sh --check 2>&1) || true
+          printf '%s\n' "$out" | sed -n '/^SSH/,/^Accounts/p'
+          test "$(printf '%s\n' "$out" | grep -c 'PermitRootLogin' || true)" = 1 \
+            || { echo "::error::the SSH config was not read"; exit 1; }
+          if sudo test -e /run/sshd; then echo "::error::--check created /run/sshd"; exit 1; fi
+          # A list of open ports is information: shown, not counted as a pass.
+          printf '%s\n' "$out" | grep -F '· Ports listening publicly'
+          printf '%s\n' "$out" | grep -F '· Ping:'
+          # A packaged config that an update kept back is reported.
+          sudo touch /etc/ci-harden.conf.dpkg-dist
+          out=$(sudo HARDEN_LANG=en bash harden.sh --check 2>&1) || true
+          printf '%s\n' "$out" | grep -F 'New package configs not reviewed'
+          sudo rm /etc/ci-harden.conf.dpkg-dist
+
       - name: The language is remembered, and --check never writes it
         run: |
           sudo rm -f /etc/harden/lang
@@ -243,6 +264,36 @@ jobs:
           if [ "$rc" = 0 ]; then sudo ss -Hltnp 'sport = :2224'; echo "::error::accepted an sshd that did not bind every port"; exit 1; fi
           grep -q 'not bound to all of: 2223 2224' switch.out
           kill %1 2>/dev/null || true
+          # a process that is merely called sshd is not the script's to stop
+          cp "$(readlink -f /usr/bin/python3)" /tmp/sshd
+          PYTHONHOME=/usr /tmp/sshd -m http.server 2230 --bind 127.0.0.1 >/dev/null 2>&1 &
+          fake=$!
+          for _ in 1 2 3 4 5 6 7 8 9 10; do ss -Hltn 'sport = :2230' | grep -q . && break; sleep 0.5; done
+          sudo ss -Hltnp 'sport = :2230' | grep -F '"sshd",pid='
+          sudo bash -c 'source ./harden.sh; kill_sshd_listeners_on 2230'
+          sleep 1
+          kill -0 "$fake" || { echo "::error::stopped a process that only shares the name"; exit 1; }
+          kill "$fake"
+          # KillMode is checked, not assumed: a unit that would take sessions down with it
+          # is corrected for the length of the switch
+          sudo mkdir -p /etc/systemd/system/ssh.service.d
+          printf '[Service]\nKillMode=control-group\n' | sudo tee /etc/systemd/system/ssh.service.d/override.conf >/dev/null
+          sudo systemctl daemon-reload
+          test "$(systemctl show -p KillMode --value ssh)" = control-group
+          sudo bash -c 'source ./harden.sh; ensure_ssh_killmode'
+          test "$(systemctl show -p KillMode --value ssh)" = process
+          sudo rm -rf /etc/systemd/system/ssh.service.d/override.conf /run/systemd/system/ssh.service.d
+          sudo systemctl daemon-reload
+          # the generated SSH config is one sshd accepts; other accounts get in only when
+          # named, and only existing ones — never root, never a typo
+          sudo mkdir -p /run/sshd
+          sudo bash -c 'source ./harden.sh; SSHD_DROPIN=/tmp/ci-sshd.conf; NEW_USER=runner
+            SSH_EXTRA_USERS=$(valid_extra_users "root,runner nosuchuser daemon"); write_sshd_config 2231'
+          sudo grep -x 'AllowUsers runner daemon' /tmp/ci-sshd.conf
+          sudo /usr/sbin/sshd -t -f /tmp/ci-sshd.conf
+          sudo bash -c 'source ./harden.sh; SSHD_DROPIN=/tmp/ci-sshd.conf; NEW_USER=runner; write_sshd_config 2231'
+          sudo grep -x 'AllowUsers runner' /tmp/ci-sshd.conf
+          sudo rm -f /tmp/ci-sshd.conf
           sudo rm -f /etc/ssh/sshd_config.d/00-ci.conf
           sudo systemctl stop ssh
 

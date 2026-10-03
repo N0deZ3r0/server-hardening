@@ -5,7 +5,7 @@
 **One command turns a fresh Debian or Ubuntu VPS into a server that only lets in your key — and it will not close the old door until you have walked through the new one.**
 
 [![CI](https://github.com/N0deZ3r0/server-hardening/actions/workflows/ci.yml/badge.svg)](https://github.com/N0deZ3r0/server-hardening/actions/workflows/ci.yml)
-![version](https://img.shields.io/badge/version-2026.10.12-3b5bdb)
+![version](https://img.shields.io/badge/version-2026.10.13-3b5bdb)
 ![Debian](https://img.shields.io/badge/Debian-12%20%2F%2013-a80030)
 ![Ubuntu](https://img.shields.io/badge/Ubuntu-22.04%20%2F%2024.04%20%2F%2026.04-e95420)
 ![bash](https://img.shields.io/badge/bash-single%20file-2f9e44)
@@ -24,7 +24,7 @@ summary, can report to Telegram, and finishes with a Lynis audit. Later, `sudo h
 audits the server without changing anything. The interface is in English and Russian.
 
 ```bash
-curl -fsSLo harden.sh https://github.com/N0deZ3r0/server-hardening/releases/download/v2026.10.12/harden.sh && echo "2fadf6ac8769e03664f5fe27bcb6dc454e183b31a7be5a69c6ecd0d93b7b4870  harden.sh" | sha256sum -c - && sudo bash harden.sh
+curl -fsSLo harden.sh https://github.com/N0deZ3r0/server-hardening/releases/download/v2026.10.13/harden.sh && echo "6ed0ebd7940557a9492294a0270dd30a5c3258b4506e3fe9ceb9e80fffdb0f82  harden.sh" | sha256sum -c - && sudo bash harden.sh
 ```
 
 The command downloads a fixed release and checks its SHA-256 before running it: if a single
@@ -61,7 +61,8 @@ outside, so most of the script is about not making it.
   (this happened during testing).
 - **Pre-existing accounts** (`ubuntu`, `opc`, `admin` from the provider) are locked only
   *after* the new user's login is confirmed — on AWS or Oracle that is the account you
-  are logged in with.
+  are logged in with. If you keep them, the script says that SSH will accept only the new
+  user and asks whether to let them in as well — it does not shut them out silently.
 - **It runs inside tmux.** Fresh VPS images often restart SSH in the first minutes and
   drop the session; the setup keeps going, and `tmux attach -t harden` brings you back.
 - **It waits for the provider.** Many images run a full upgrade from cloud-init after
@@ -80,7 +81,8 @@ outside, so most of the script is about not making it.
 4. New SSH port (a random one is suggested)
 5. Other ports to open, e.g. `80,443`
 6. Whether to whitelist your current IP
-7. Nightly reboot after kernel updates, locking root, locking other accounts, CrowdSec, Lynis
+7. Nightly reboot after kernel updates, locking root, locking other accounts — or, if they
+   stay, whether they keep SSH login — CrowdSec, Lynis
 8. Telegram alerts — if yes, it walks you through creating the bot
 9. Whether to stop answering ping (default: no)
 
@@ -90,14 +92,14 @@ Then a password for the new user — sudo needs it.
 
 | Area | Changes |
 |---|---|
-| **SSH** | New port, `AuthenticationMethods publickey`, no passwords, `PermitRootLogin no`, `AllowUsers <you>`, post-quantum key exchange first (`mlkem768x25519`, `sntrup761x25519` — whichever the installed OpenSSH supports), no weak ciphers, MACs, DH groups or host keys, no forwarding, `MaxAuthTries 3`, version banner hidden |
+| **SSH** | New port, `AuthenticationMethods publickey`, no passwords, `PermitRootLogin no`, `AllowUsers <you>` (plus the accounts you name), `sshd_config` readable by root only, post-quantum key exchange first (`mlkem768x25519`, `sntrup761x25519` — whichever the installed OpenSSH supports), no weak ciphers, MACs, DH groups or host keys, no forwarding, `MaxAuthTries 3`, version banner hidden |
 | **Accounts** | sudo user with your key, password policy (12+ characters, 3 classes), every sudo command logged, root password locked, provider accounts locked with their `NOPASSWD` sudo rules disabled |
 | **Firewall** | UFW: all incoming denied except SSH; SSH rate-limited for everyone except your whitelisted IP; optionally no answer to ping |
 | **Brute force** | fail2ban (`sshd` aggressive + `recidive`, bans grow up to 4 weeks), optional CrowdSec with the nftables bouncer |
 | **Kernel** | `kptr_restrict`, `dmesg_restrict`, BPF hardening, `ptrace_scope`, protected links/FIFOs, anti-spoofing and redirect filters, SYN cookies, BBR; unused filesystems and protocols (dccp, sctp, rds, tipc) disabled |
 | **Audit** | auditd rules for accounts, sudoers, SSH config, cron, kernel modules, clock, commands run as root; process accounting; sysstat |
 | **Updates** | unattended-upgrades for security updates, needrestart, optional nightly reboot; local config files are kept on upgrade (`--force-confold`), so a package whose config this script edited is not held back |
-| **System** | AppArmor, chrony, persistent size-capped journal, no core dumps (apport off), `UMASK 027`, per-user `/tmp` (libpam-tmpdir), ModemManager and udisks2 off, legal pre-login banner |
+| **System** | AppArmor, chrony, persistent size-capped journal, no core dumps (apport off), `UMASK 027`, per-user `/tmp` (libpam-tmpdir), ModemManager and udisks2 off, legal pre-login banner, the server's own name in `/etc/hosts` |
 | **Login** | The stock Ubuntu greeting (Welcome, ESM, ads, legal) replaced by `server-status` |
 | **Alerts** | Optional Telegram messages: every SSH login, a protective service failing, boot, a daily report |
 | **Report** | Lynis audit, report in `/root/harden-report.txt`, log in `/var/log/harden.log`; the script stays as `/usr/local/sbin/harden` for `--check` |
@@ -187,9 +189,12 @@ harden-boot-alert && sudo rm /etc/harden/telegram.conf`.
 sudo harden --check          # or: sudo bash harden.sh --check
 ```
 
-Changes nothing. It reads the effective SSH configuration (`sshd -T`), accounts and sudo
-rules, firewall, fail2ban and CrowdSec, auditd, AppArmor, updates, clock and kernel settings,
-and prints one line each. An illustration of the format:
+Changes nothing — it does not create so much as a directory. It reads the effective SSH
+configuration (`sshd -T`), accounts and sudo rules, firewall, fail2ban and CrowdSec, auditd,
+AppArmor, updates, clock and kernel settings, and prints one line each. On a server this
+script set up, every kernel value it wrote is compared with the live one, so a setting that
+something else has put back shows up. Package configs that an update kept back for review
+are counted. An illustration of the format:
 
 ```
 SSH
@@ -203,13 +208,14 @@ Accounts
   ! Passwordless sudo (NOPASSWD): deploy
 Network and protection
   ✓ UFW on, incoming denied
-  ✓ Ports listening publicly: 80 443 10022
+  · Ports listening publicly: 80 443 10022
   ✗ fail2ban does not protect SSH
 ...
 Summary: ✓ 21  ! 2  ✗ 1
 ```
 
-`✗` is something that lets people in or leaves holes unpatched; `!` is worth a look. The exit
+`✗` is something that lets people in or leaves holes unpatched; `!` is worth a look; `·` is a
+fact with no verdict — which ports should be open is your call, the check only lists them. The exit
 code is 1 when there is any `✗`, so it can run from cron or monitoring. It works on servers
 this script never touched — that is the point: a quick answer to "what state is this box in".
 
@@ -233,6 +239,7 @@ sudo HARDEN_LANG=en NEW_USER=sysop SSH_PORT=42222 GITHUB_KEYS_USER=yourname \
 | `ADMIN_IP` | IP to whitelist; empty for none |
 | `AUTO_REBOOT`, `REBOOT_TIME` | nightly reboot after kernel updates, default `04:00` |
 | `LOCK_ROOT`, `LOCK_OTHER_USERS` | lock the root password / provider accounts |
+| `SSH_EXTRA_USERS` | existing accounts that keep SSH login besides the new user, `"deploy monitoring"`; empty for none |
 | `INSTALL_CROWDSEC`, `RUN_LYNIS`, `REBOOT_NOW`, `SERVER_STATUS` | `yes` / `no` |
 | `REUSE_USER` | `yes` to use an account that already exists (asked otherwise) |
 | `TELEGRAM`, `TG_CHAT_ID`, `TG_REPORT_TIME` | `yes` / `no`, the chat to write to, time of the daily report (`09:00`) |
@@ -276,6 +283,22 @@ To undo a part: SSH settings live in `/etc/ssh/sshd_config.d/00-hardening.conf`,
 settings in `/etc/sysctl.d/99-hardening.conf` and `99-protect-links.conf`, and the originals in
 `/root/harden-backup-<date>/`. A locked account comes back with
 `sudo usermod -U -s /bin/bash <name>`.
+
+## Updating
+
+On a server that is already set up, put the newer script in place of the old one — the same
+download and checksum, without running the setup:
+
+```bash
+curl -fsSLo harden.sh https://github.com/N0deZ3r0/server-hardening/releases/download/v2026.10.13/harden.sh && echo "6ed0ebd7940557a9492294a0270dd30a5c3258b4506e3fe9ceb9e80fffdb0f82  harden.sh" | sha256sum -c - && sudo install -m 755 harden.sh /usr/local/sbin/harden
+```
+
+That replaces the commands — `--check`, `--ping`, `--lang`, `--setup-telegram` — and leaves
+the server's settings as they are. What a newer version would set differently shows up in
+`sudo harden --check`. Two parts have commands of their own: `sudo harden --setup-telegram`
+(answer yes to keep the saved bot) replaces the alert helpers, `sudo harden --install-status`
+the login summary. Kernel, SSH and firewall settings are written only by the full setup;
+there is no separate command that re-applies them yet.
 
 ## Releases and verification
 
