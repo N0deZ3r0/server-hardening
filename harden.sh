@@ -24,9 +24,10 @@
 #    INSTALL_CROWDSEC=yes|no, RUN_LYNIS=yes|no, REBOOT_NOW=yes|no,
 #    SERVER_STATUS=yes|no, REUSE_USER=yes|no (use an existing account),
 #    TELEGRAM=yes|no, TG_TOKEN, TG_CHAT_ID, TG_REPORT_TIME=09:00,
+#    DISABLE_PING=yes|no (do not answer ICMP echo; default no),
 #    SET_USER_PASSWORD=no (root is then NOT locked)
 #
-#  Other modes: --check (audit only), --setup-telegram, --install-status, --help
+#  Other modes: --check (audit only), --setup-telegram, --ping off|on, --install-status, --help
 # =============================================================================
 set -Eeuo pipefail
 # Files this script writes get ordinary modes whatever umask the caller has. This script
@@ -36,7 +37,7 @@ set -Eeuo pipefail
 # explicitly where it is written.
 umask 022
 
-HARDEN_VERSION="2026.10.6"
+HARDEN_VERSION="2026.10.7"
 LOG_FILE="/var/log/harden.log"
 REPORT_FILE="/root/harden-report.txt"
 BACKUP_DIR="/root/harden-backup-$(date +%Y%m%d-%H%M%S)"
@@ -86,6 +87,7 @@ harden.sh — Debian/Ubuntu server hardening
   sudo bash harden.sh                   full interactive setup
   sudo bash harden.sh --check           audit this server, change nothing (exit 1 on ✗)
   sudo bash harden.sh --setup-telegram  add Telegram alerts to a hardened server
+  sudo bash harden.sh --ping off|on     stop / resume answering ping
   sudo bash harden.sh --install-status  only install the login summary (server-status)
   sudo HARDEN_LANG=ru bash harden.sh    interface in Russian / интерфейс на русском
 
@@ -122,7 +124,8 @@ relaunch_in_tmux() {
   inner="env HARDEN_NO_TMUX=1"
   for v in HARDEN_LANG NEW_USER SSH_PORT SSH_PUBKEY GITHUB_KEYS_USER EXTRA_PORTS AUTO_REBOOT REBOOT_TIME \
            LOCK_ROOT LOCK_OTHER_USERS INSTALL_CROWDSEC RUN_LYNIS REBOOT_NOW SET_USER_PASSWORD ADMIN_IP \
-           SERVER_STATUS REUSE_USER TELEGRAM TG_CHAT_ID TG_REPORT_TIME HARDEN_TG_API SSH_CLIENT; do
+           SERVER_STATUS REUSE_USER TELEGRAM TG_CHAT_ID TG_REPORT_TIME HARDEN_TG_API DISABLE_PING \
+           SSH_CLIENT; do
     # TG_TOKEN is deliberately not passed: it would sit in tmux's command line, readable
     # in ps; inside tmux the script asks for it again (hidden input)
     [[ -n ${!v+x} ]] && inner+=" $v=$(printf '%q' "${!v}")"
@@ -324,6 +327,12 @@ collect_answers() {
                           "Telegram alerts (SSH logins, failures, daily report)?")" n; then
     ask_telegram
   else TELEGRAM=no; fi
+  # Off by default: it hides the server from ping sweeps, not from a port scan, and a
+  # provider that monitors by ping will report the server as down
+  if env_yn DISABLE_PING "$(T "Не отвечать на ping? (маскировка, не защита; мониторинг хостера по ping сочтёт сервер упавшим)" \
+                              "Stop answering ping? (obscurity, not protection; a provider that monitors by ping will see the server as down)")" n; then
+    DISABLE_PING=yes
+  else DISABLE_PING=no; fi
 
   echo
   echo "${C_BOLD}$(T "Итог:" "Summary:")${C_0}"
@@ -337,6 +346,7 @@ collect_answers() {
   [[ -n $OTHER_USERS ]] && echo "  $(T "Блок. аккаунтов:   " "Lock accounts:     ") $LOCK_OTHER_USERS ($OTHER_USERS)"
   echo "  CrowdSec:           $INSTALL_CROWDSEC"
   echo "  Telegram:           $TELEGRAM${TG_CHAT_ID:+ (chat $TG_CHAT_ID)}"
+  echo "  $(T "Ответ на ping:     " "Answer ping:       ") $([[ $DISABLE_PING == yes ]] && T "нет" "no" || T "да" "yes")"
   ask_yn "$(T "Начать настройку?" "Start?")" y || die "$(T "Отменено." "Cancelled.")"
 }
 
@@ -459,6 +469,38 @@ lock_other_users() {
   visudo -cq || die "$(T "Ошибка sudoers после блокировки пользователей — см." "sudoers error after locking accounts — see") $BACKUP_DIR"
 }
 
+# ---------- ping ----------
+# Its own sysctl file, so it can be switched without touching the rest. UFW's before.rules
+# is left alone: it belongs to the ufw package, and an edited package config makes
+# unattended-upgrades skip that package. Only echo requests are ignored — path MTU
+# discovery and IPv6 neighbour discovery use other ICMP types and keep working.
+PING_SYSCTL=/etc/sysctl.d/99-hardening-ping.conf
+set_ping() {  # set_ping off|on
+  case ${1:-} in
+    off)
+      cat >"$PING_SYSCTL" <<'EOF'
+# harden.sh: do not answer ping (ICMP echo). Undo: sudo harden --ping on
+net.ipv4.icmp_echo_ignore_all = 1
+net.ipv6.icmp.echo_ignore_all = 1
+EOF
+      chmod 644 "$PING_SYSCTL"
+      # -e: the IPv6 key is missing on old kernels and where IPv6 is disabled
+      sysctl -e -q -p "$PING_SYSCTL" 2>/dev/null \
+        || warn "$(T "Не удалось применить (нормально для контейнеров)" "Could not apply it (normal in containers)")"
+      [[ $(sysctl -n net.ipv4.icmp_echo_ignore_all 2>/dev/null) == 1 ]] \
+        && ok "$(T "Сервер не отвечает на ping (вернуть: sudo harden --ping on)" "The server no longer answers ping (undo: sudo harden --ping on)")"
+      ;;
+    on)
+      rm -f "$PING_SYSCTL"
+      sysctl -q -w net.ipv4.icmp_echo_ignore_all=0 2>/dev/null || true
+      sysctl -e -q -w net.ipv6.icmp.echo_ignore_all=0 2>/dev/null || true
+      ok "$(T "Сервер отвечает на ping" "The server answers ping")"
+      ;;
+    *) die "$(T "Использование: sudo harden --ping off|on" "Usage: sudo harden --ping off|on")" ;;
+  esac
+  return 0
+}
+
 # ---------- 4. system ----------
 harden_system() {
   step "$(T "Ядро и система" "Kernel and system")"
@@ -509,6 +551,12 @@ kernel.core_uses_pid = 1
 kernel.ctrl-alt-del = 0
 EOF
   sysctl --system >/dev/null 2>&1 || warn "$(T "Часть sysctl не применилась (нормально для контейнеров)" "Some sysctl values were not applied (normal in containers)")"
+
+  if [[ $DISABLE_PING == yes ]]; then
+    set_ping off
+  elif [[ -e $PING_SYSCTL ]]; then
+    set_ping on    # answered "no" on a re-run after an earlier "yes"
+  fi
 
   # No core dumps
   echo '* hard core 0' >/etc/security/limits.d/99-nocore.conf
@@ -1477,6 +1525,9 @@ run_check() {
   list=$(ss -Hltnu 2>/dev/null | awk '{print $1, $5}' | grep -vE ' (127\.|\[::1\]|\[::ffff:127\.)' \
          | grep -vE '^udp .*:68$' | sed -E 's/.*:([0-9]+)$/\1/' | sort -un | paste -sd' ' - || true)
   chk pass "$(T "Порты, слушающие снаружи:" "Ports listening publicly:") ${list:-$(T "нет" "none")}"
+  # Informational either way: answering ping is not a weakness
+  [[ $(sysctl -n net.ipv4.icmp_echo_ignore_all 2>/dev/null) == 1 ]] \
+    && chk pass "$(T "Ping: сервер не отвечает" "Ping: not answered")" || chk pass "$(T "Ping: сервер отвечает (отключить: sudo harden --ping off)" "Ping: answered (to stop: sudo harden --ping off)")"
   systemctl is-active --quiet fail2ban && fail2ban-client status sshd &>/dev/null \
     && chk pass "$(T "fail2ban защищает SSH" "fail2ban protects SSH")" || chk fail "$(T "fail2ban не защищает SSH" "fail2ban does not protect SSH")"
   if systemctl cat crowdsec.service &>/dev/null; then
@@ -1525,6 +1576,7 @@ main() {
       TELEGRAM=yes; ask_telegram; install_notifications
       [[ $TELEGRAM == yes ]] || exit 1
       exit 0 ;;
+    --ping) set_ping "${2:-}"; exit 0 ;;
     "") ;;
     *) usage; exit 2 ;;
   esac

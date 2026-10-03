@@ -5,7 +5,7 @@
 **Одна команда превращает свежий VPS на Debian или Ubuntu в сервер, который пускает только по вашему ключу, — и не закроет старую дверь, пока вы не прошли через новую.**
 
 [![CI](https://github.com/N0deZ3r0/server-hardening/actions/workflows/ci.yml/badge.svg)](https://github.com/N0deZ3r0/server-hardening/actions/workflows/ci.yml)
-![version](https://img.shields.io/badge/version-2026.10.6-3b5bdb)
+![version](https://img.shields.io/badge/version-2026.10.7-3b5bdb)
 ![Debian](https://img.shields.io/badge/Debian-12%20%2F%2013-a80030)
 ![Ubuntu](https://img.shields.io/badge/Ubuntu-22.04%20%2F%2024.04%20%2F%2026.04-e95420)
 ![bash](https://img.shields.io/badge/bash-%D0%BE%D0%B4%D0%B8%D0%BD%20%D1%84%D0%B0%D0%B9%D0%BB-2f9e44)
@@ -25,7 +25,7 @@ CrowdSec, усиливает ядро, включает автообновлен
 Интерфейс — на русском и английском.
 
 ```bash
-curl -fsSLo harden.sh https://github.com/N0deZ3r0/server-hardening/releases/download/v2026.10.6/harden.sh && echo "dc6fb0dd32fefdad6c35841e27feadb0236c03d2018393364a84c8e602454084  harden.sh" | sha256sum -c - && sudo bash harden.sh
+curl -fsSLo harden.sh https://github.com/N0deZ3r0/server-hardening/releases/download/v2026.10.7/harden.sh && echo "2ca638d00aa77ad559afe3317c16b12944b858110e3fb018d00961d4407a652e  harden.sh" | sha256sum -c - && sudo bash harden.sh
 ```
 
 Команда скачивает конкретный релиз и сверяет его SHA-256 до запуска: если отличается хоть
@@ -83,6 +83,7 @@ auditd мешают развить взлом и помогают потом п�
 6. Добавлять ли ваш текущий IP в белый список
 7. Ночная перезагрузка после обновления ядра, блокировка root и других аккаунтов, CrowdSec, Lynis
 8. Уведомления в Telegram — если да, скрипт проведёт через создание бота
+9. Отключить ли ответ на ping (по умолчанию — нет)
 
 Затем — пароль для нового пользователя: он нужен для sudo.
 
@@ -92,7 +93,7 @@ auditd мешают развить взлом и помогают потом п�
 |---|---|
 | **SSH** | Новый порт, `AuthenticationMethods publickey`, пароли выключены, `PermitRootLogin no`, `AllowUsers <вы>`, постквантовый обмен ключами в приоритете (`mlkem768x25519`, `sntrup761x25519` — что поддерживает установленный OpenSSH), без слабых шифров, MAC, DH-групп и хост-ключей, без проброса портов, `MaxAuthTries 3`, версия скрыта |
 | **Аккаунты** | sudo-пользователь с вашим ключом, политика паролей (от 12 символов, 3 типа), журнал всех команд sudo, пароль root заблокирован, аккаунты хостера заблокированы вместе с их правилами `NOPASSWD` |
-| **Firewall** | UFW: всё входящее запрещено, кроме SSH; на SSH лимит подключений для всех, кроме вашего IP |
+| **Firewall** | UFW: всё входящее запрещено, кроме SSH; на SSH лимит подключений для всех, кроме вашего IP; по желанию — без ответа на ping |
 | **Подбор паролей** | fail2ban (`sshd` aggressive + `recidive`, бан растёт до 4 недель), по желанию CrowdSec с nftables-bouncer |
 | **Ядро** | `kptr_restrict`, `dmesg_restrict`, защита BPF, `ptrace_scope`, защищённые ссылки и FIFO, фильтры подмены адресов и редиректов, SYN cookies, BBR; ненужные файловые системы и протоколы (dccp, sctp, rds, tipc) отключены |
 | **Аудит** | правила auditd на аккаунты, sudoers, конфиг SSH, cron, модули ядра, время, команды от root; учёт процессов; sysstat |
@@ -240,6 +241,7 @@ sudo HARDEN_LANG=ru NEW_USER=sysop SSH_PORT=42222 GITHUB_KEYS_USER=вашник 
 | `INSTALL_CROWDSEC`, `RUN_LYNIS`, `REBOOT_NOW`, `SERVER_STATUS` | `yes` / `no` |
 | `REUSE_USER` | `yes` — использовать уже существующий аккаунт (иначе спросит) |
 | `TELEGRAM`, `TG_CHAT_ID`, `TG_REPORT_TIME` | `yes` / `no`, чат для сообщений, время ежедневной сводки (`09:00`) |
+| `DISABLE_PING` | `yes` — не отвечать на ping (ICMP echo); по умолчанию `no` |
 | `TG_TOKEN` | токен бота; в tmux не передаётся (был бы виден в `ps`), поэтому там спрашивается заново со скрытым вводом |
 | `SET_USER_PASSWORD=no` | не задавать пароль для sudo сейчас; root тогда не блокируется |
 
@@ -271,6 +273,7 @@ sudo lynis audit system                # полный аудит
 server-status                          # сводка
 sudo harden --check                    # проверка, ничего не меняется
 sudo harden --setup-telegram           # подключить уведомления
+sudo harden --ping off                 # не отвечать на ping (--ping on — вернуть)
 ```
 
 Как откатить часть настроек: SSH — в `/etc/ssh/sshd_config.d/00-hardening.conf`, ядро — в
@@ -320,6 +323,12 @@ sudo harden --setup-telegram           # подключить уведомлен
   в `journalctl -f -n 0` и файлы, созданные нечитаемыми из-за собственной же `UMASK 027`
   скрипта; каждая теперь воспроизводится в CI. Уведомление о падении службы проверено
   только в CI — на юните, который действительно падает, с заменителем Bot API.
+- **Отказ отвечать на ping — маскировка, а не защита.** Сервер пропадает из проверок
+  пингом, но сканирование портов находит его точно так же. Заодно «слепнет» всё, что
+  проверяет сервер пингом, — в том числе мониторинг некоторых хостеров, который сочтёт его
+  упавшим, — поэтому по умолчанию это выключено. Игнорируются только echo-запросы
+  (настройка ядра в отдельном файле); ICMP, нужный для определения MTU и для IPv6, не
+  затрагивается.
 - **Telegram видит ваши уведомления.** В сообщениях есть имя сервера и IP-адреса входов, и
   они проходят через серверы Telegram. Любой, у кого есть root на сервере, может прочитать
   токен бота и писать в этот чат от его имени — заведите бота только для этого сервера.

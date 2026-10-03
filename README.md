@@ -5,7 +5,7 @@
 **One command turns a fresh Debian or Ubuntu VPS into a server that only lets in your key — and it will not close the old door until you have walked through the new one.**
 
 [![CI](https://github.com/N0deZ3r0/server-hardening/actions/workflows/ci.yml/badge.svg)](https://github.com/N0deZ3r0/server-hardening/actions/workflows/ci.yml)
-![version](https://img.shields.io/badge/version-2026.10.6-3b5bdb)
+![version](https://img.shields.io/badge/version-2026.10.7-3b5bdb)
 ![Debian](https://img.shields.io/badge/Debian-12%20%2F%2013-a80030)
 ![Ubuntu](https://img.shields.io/badge/Ubuntu-22.04%20%2F%2024.04%20%2F%2026.04-e95420)
 ![bash](https://img.shields.io/badge/bash-single%20file-2f9e44)
@@ -24,7 +24,7 @@ summary, can report to Telegram, and finishes with a Lynis audit. Later, `sudo h
 audits the server without changing anything. The interface is in English and Russian.
 
 ```bash
-curl -fsSLo harden.sh https://github.com/N0deZ3r0/server-hardening/releases/download/v2026.10.6/harden.sh && echo "dc6fb0dd32fefdad6c35841e27feadb0236c03d2018393364a84c8e602454084  harden.sh" | sha256sum -c - && sudo bash harden.sh
+curl -fsSLo harden.sh https://github.com/N0deZ3r0/server-hardening/releases/download/v2026.10.7/harden.sh && echo "2ca638d00aa77ad559afe3317c16b12944b858110e3fb018d00961d4407a652e  harden.sh" | sha256sum -c - && sudo bash harden.sh
 ```
 
 The command downloads a fixed release and checks its SHA-256 before running it: if a single
@@ -82,6 +82,7 @@ outside, so most of the script is about not making it.
 6. Whether to whitelist your current IP
 7. Nightly reboot after kernel updates, locking root, locking other accounts, CrowdSec, Lynis
 8. Telegram alerts — if yes, it walks you through creating the bot
+9. Whether to stop answering ping (default: no)
 
 Then a password for the new user — sudo needs it.
 
@@ -91,7 +92,7 @@ Then a password for the new user — sudo needs it.
 |---|---|
 | **SSH** | New port, `AuthenticationMethods publickey`, no passwords, `PermitRootLogin no`, `AllowUsers <you>`, post-quantum key exchange first (`mlkem768x25519`, `sntrup761x25519` — whichever the installed OpenSSH supports), no weak ciphers, MACs, DH groups or host keys, no forwarding, `MaxAuthTries 3`, version banner hidden |
 | **Accounts** | sudo user with your key, password policy (12+ characters, 3 classes), every sudo command logged, root password locked, provider accounts locked with their `NOPASSWD` sudo rules disabled |
-| **Firewall** | UFW: all incoming denied except SSH; SSH rate-limited for everyone except your whitelisted IP |
+| **Firewall** | UFW: all incoming denied except SSH; SSH rate-limited for everyone except your whitelisted IP; optionally no answer to ping |
 | **Brute force** | fail2ban (`sshd` aggressive + `recidive`, bans grow up to 4 weeks), optional CrowdSec with the nftables bouncer |
 | **Kernel** | `kptr_restrict`, `dmesg_restrict`, BPF hardening, `ptrace_scope`, protected links/FIFOs, anti-spoofing and redirect filters, SYN cookies, BBR; unused filesystems and protocols (dccp, sctp, rds, tipc) disabled |
 | **Audit** | auditd rules for accounts, sudoers, SSH config, cron, kernel modules, clock, commands run as root; process accounting; sysstat |
@@ -235,6 +236,7 @@ sudo HARDEN_LANG=en NEW_USER=sysop SSH_PORT=42222 GITHUB_KEYS_USER=yourname \
 | `INSTALL_CROWDSEC`, `RUN_LYNIS`, `REBOOT_NOW`, `SERVER_STATUS` | `yes` / `no` |
 | `REUSE_USER` | `yes` to use an account that already exists (asked otherwise) |
 | `TELEGRAM`, `TG_CHAT_ID`, `TG_REPORT_TIME` | `yes` / `no`, the chat to write to, time of the daily report (`09:00`) |
+| `DISABLE_PING` | `yes` to stop answering ping (ICMP echo); default `no` |
 | `TG_TOKEN` | the bot token; not carried into tmux (it would show in `ps`), so it is asked for there with hidden input |
 | `SET_USER_PASSWORD=no` | skip the sudo password now; root then stays unlocked |
 
@@ -266,6 +268,7 @@ sudo lynis audit system                # full audit
 server-status                          # summary
 sudo harden --check                    # audit, nothing is changed
 sudo harden --setup-telegram           # add Telegram alerts
+sudo harden --ping off                 # stop answering ping (--ping on to resume)
 ```
 
 To undo a part: SSH settings live in `/etc/ssh/sshd_config.d/00-hardening.conf`, kernel
@@ -313,6 +316,11 @@ Knowingly open, with the reason for each:
   second connection, `journalctl -f -n 0` dropping lines, and files written unreadable
   under the script's own `UMASK 027` — and each is now replayed in CI. The failure alert is
   verified in CI only, with a unit that really fails, against a stand-in for the Bot API.
+- **Not answering ping is obscurity, not protection.** It takes the server out of ping
+  sweeps; a port scan finds it just the same. It also blinds anything that checks the
+  server by ping — including some providers' monitoring, which will report it as down — so
+  it is off unless you ask. Only echo requests are ignored (a kernel setting in its own
+  file); the ICMP that path MTU discovery and IPv6 need is untouched.
 - **Telegram sees your alerts.** Messages carry the hostname and the IP addresses of
   logins and pass through Telegram's servers. Anyone with root on the server can read the
   bot token and write to that chat as the bot — use a bot made for this server only.

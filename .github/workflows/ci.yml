@@ -83,6 +83,26 @@ jobs:
           done
           sudo rm /etc/apt/apt.conf.d/99ci-unattended
 
+      - name: --ping off / on changes whether ping is answered
+        # Measured with a real ping, not just by reading the setting back.
+        run: |
+          set -x
+          ping -c1 -W2 127.0.0.1 >/dev/null
+          sudo HARDEN_LANG=en bash harden.sh --ping off
+          test "$(sysctl -n net.ipv4.icmp_echo_ignore_all)" = 1
+          test "$(stat -c %a /etc/sysctl.d/99-hardening-ping.conf)" = 644
+          if ping -c1 -W2 127.0.0.1 >/dev/null; then echo "::error::ping is still answered"; exit 1; fi
+          # It has to come back the way a reboot applies it: from the file, not from memory
+          sudo sysctl -q -w net.ipv4.icmp_echo_ignore_all=0
+          sudo sysctl --system >/dev/null
+          test "$(sysctl -n net.ipv4.icmp_echo_ignore_all)" = 1
+          sudo HARDEN_LANG=en bash harden.sh --check | grep -F 'Ping: not answered' || true
+          sudo HARDEN_LANG=en bash harden.sh --ping on
+          test "$(sysctl -n net.ipv4.icmp_echo_ignore_all)" = 0
+          test ! -e /etc/sysctl.d/99-hardening-ping.conf
+          ping -c1 -W2 127.0.0.1 >/dev/null
+          if sudo HARDEN_LANG=en bash harden.sh --ping maybe; then echo "::error::a wrong argument was accepted"; exit 1; fi
+
       - name: Telegram alerts against a fake Bot API
         # A local stand-in for api.telegram.org records what would have been sent.
         run: |
