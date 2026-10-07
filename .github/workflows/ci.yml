@@ -73,6 +73,17 @@ jobs:
           out=$(bash harden.sh 2>&1 </dev/null) && { echo "::error::ran without root"; exit 1; }
           echo "$out" | grep -q 'Run as root'
 
+      - name: No tmux on a terminal that cannot draw one
+        # TERM=dumb is a terminal the system knows and tmux cannot use: it ends with
+        # "terminal does not support clear", and the setup ended with it. The script has to
+        # stay where it is then.
+        run: |
+          sudo apt-get install -y -q tmux >/dev/null
+          printf 'source ./harden.sh\nrelaunch_in_tmux\necho STAYED-IN-PLACE\n' > tmux-probe.sh
+          out=$(TERM=dumb script -qec "bash tmux-probe.sh" /dev/null | tr -d '\r')
+          echo "$out"
+          grep -q 'STAYED-IN-PLACE' <<<"$out"
+
       - name: The warning frame has straight sides
         # Found live: the side of the frame stood one column short of its corners. Under
         # LANG=C bash counts bytes and Cyrillic is two bytes a letter, so both are tried.

@@ -506,6 +506,34 @@ def report_time(password, port=NEW):
                check=False).stdout.strip()
 
 
+def fail2ban_counts_failures(password):
+    """"The jail is up" is not "the jail sees anything": it reads the journal through a
+    match on who wrote the line, and since OpenSSH 9.8 the lines about a failed login are
+    written by sshd-session, not sshd. So one login is made to fail — as root, which is
+    refused — with this host taken off the whitelist for that moment, and the jail has to
+    have counted it. One failure is far from a ban."""
+    say("fail2ban sees a failed login")
+    ssh(NEW, "alex", sudo(password, f"fail2ban-client set sshd delignoreip {GATEWAY}"))
+    try:
+        ssh(NEW, "root", "true", check=False)
+        deadline = time.time() + 30
+        while True:
+            r = ssh(NEW, "alex", sudo(password, "fail2ban-client status sshd"))
+            m = re.search(r"Total failed:\s+(\d+)", r.stdout)
+            if m and int(m.group(1)) > 0:
+                print(r.stdout)
+                return
+            if time.time() > deadline:
+                print(r.stdout)
+                j = ssh(NEW, "alex", sudo(password, "journalctl -n 12 --no-pager -o verbose _COMM=sshd _COMM=sshd-session _COMM=sshd-auth")
+                        + " | grep -E '_COMM|_SYSTEMD_UNIT|MESSAGE=' | tail -24", check=False)
+                print(j.stdout)
+                fail("fail2ban did not count a failed SSH login: its jail is up and sees nothing")
+            time.sleep(3)
+    finally:
+        ssh(NEW, "alex", sudo(password, f"fail2ban-client set sshd addignoreip {GATEWAY}"))
+
+
 def telegram(password):
     """Alerts, with the Bot API played by this host: what the helpers really send for a
     real login, in the log format of each release's own sshd."""
@@ -604,6 +632,8 @@ def verify_undone(units_before, files_before):
     print(units_after)
     if units_after != units_before:
         fail("after --undo a service the setup switched off is not back the way it was")
+    if ssh(OLD, "root", "cat /proc/sys/net/ipv4/icmp_echo_ignore_all").stdout.strip() != "0":
+        fail("after --undo the server still does not answer ping")
     files_after = ssh(OLD, "root", FILES_PROBE, check=False).stdout
     print(files_after)
     changed = [line for line in files_before.splitlines() if line not in files_after.splitlines()]
@@ -670,6 +700,7 @@ def main():
     if has_tmux and not in_tmux:
         fail("the image has tmux, but the setup did not move itself into it")
     verify(password, "after the setup")
+    fail2ban_counts_failures(password)
     answers_and_refresh(password, pub)
     verify(password, "after --refresh")
     telegram(password)

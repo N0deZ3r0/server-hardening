@@ -10,8 +10,11 @@ here=$(cd "$(dirname "$0")/.." && pwd)
 fail() { echo "FAIL: $*" >&2; exit 1; }
 
 export DEBIAN_FRONTEND=noninteractive
-apt-get update -q >/dev/null
-apt-get install -y -q --no-install-recommends openssh-server iproute2 procps util-linux >/dev/null
+# A mirror that stops answering must cost a retry, not the whole job: one such download
+# hung for ten minutes without a line of output, until the job was cancelled.
+apt=(-o Acquire::Retries=4 -o Acquire::http::Timeout=25 -o Acquire::https::Timeout=25)
+timeout 240 apt-get "${apt[@]}" update -q >/dev/null || timeout 240 apt-get "${apt[@]}" update -q >/dev/null
+timeout 300 apt-get "${apt[@]}" install -y -q --no-install-recommends openssh-server iproute2 procps util-linux >/dev/null
 # shellcheck disable=SC1091
 . /etc/os-release
 echo "== $PRETTY_NAME"

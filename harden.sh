@@ -39,7 +39,7 @@ set -Eeuo pipefail
 # explicitly where it is written.
 umask 022
 
-HARDEN_VERSION="2026.10.26"
+HARDEN_VERSION="2026.10.27-dev"
 LOG_FILE="/var/log/harden.log"
 REPORT_FILE="/root/harden-report.txt"
 BACKUP_DIR="/root/harden-backup-$(date +%Y%m%d-%H%M%S)"
@@ -200,6 +200,10 @@ relaunch_in_tmux() {
   [[ -n ${TMUX:-} || -n ${STY:-} || -n ${HARDEN_NO_TMUX:-} ]] && return 0
   command -v tmux >/dev/null || return 0
   [[ -f $0 && -t 0 ]] || return 0
+  # Not on a terminal that cannot draw one (TERM=dumb: an editor's shell, a session started
+  # by a program): tmux ends there with "terminal does not support clear", and the setup
+  # would end with it. It runs in place instead, and preflight says what that costs.
+  case ${TERM:-dumb} in dumb|unknown) return 0 ;; esac
   local script inner v done_flag=/run/harden-tmux.done
   script=$(readlink -f "$0")
   # A session whose run is still going has to be attached to (that is what -A is for: the
@@ -228,7 +232,7 @@ relaunch_in_tmux() {
   # or unsuitable terminal") — kitty, ghostty and others on a fresh image — and the setup
   # ended right there, with that line for an explanation. They all speak xterm's language,
   # so tmux is told that instead.
-  if [[ -z ${TERM:-} ]] || { command -v infocmp >/dev/null && ! infocmp "$TERM" &>/dev/null; }; then
+  if command -v infocmp >/dev/null && ! infocmp "$TERM" &>/dev/null; then
     export TERM=xterm-256color
   fi
   exec tmux new-session -A -s harden bash -c "$inner"
@@ -2574,6 +2578,15 @@ run_undo() {
     if jail_local_is_ours; then rm -f /etc/fail2ban/jail.local; fi   # an earlier version's own file
     break
   done
+
+  # Ping is the one kernel setting that is watched from outside — a provider's monitoring,
+  # for one — so it is answered again now, not after the next reboot like the rest. Seen on
+  # a live server: undone, and still silent. (An admin's own file that switches it off is
+  # applied again by `sysctl --system` below.)
+  if [[ -e $PING_SYSCTL ]]; then
+    sysctl -q -w net.ipv4.icmp_echo_ignore_all=0 2>/dev/null || true
+    sysctl -e -q -w net.ipv6.icmp.echo_ignore_all=0 2>/dev/null || true
+  fi
 
   # Everything the setup added
   rm -f "$SYSCTL_CONF" /etc/sysctl.d/99-protect-links.conf "$PING_SYSCTL" \
