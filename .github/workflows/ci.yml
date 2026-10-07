@@ -914,7 +914,7 @@ jobs:
     # The full setup needs a real machine; the audit does not. A plain Docker container is
     # the hostile case for it — no systemd, no mount namespaces — on each supported release.
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:

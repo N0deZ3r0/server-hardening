@@ -10,23 +10,29 @@ here=$(cd "$(dirname "$0")/.." && pwd)
 fail() { echo "FAIL: $*" >&2; exit 1; }
 
 export DEBIAN_FRONTEND=noninteractive
-# Package lists first. Twice a job of this test never reached the script: from a hosted
-# runner one of the addresses behind archive.ubuntu.com now and then does not answer, and
-# apt sits on it — ten minutes without a line of output the first time, until the job was
-# cancelled. So the default mirror gets a short while, and if no lists have come by then,
-# the provider's own mirror is used: the same archive, and what the runner's own system is
-# pointed at for this very reason.
+# The packages this test needs, first. Several jobs of it never reached the script: from a
+# hosted runner an address behind archive.ubuntu.com, or behind the provider's own mirror,
+# now and then does not answer, and apt sits on it — ten minutes without a line of output
+# the first time, until the job was cancelled. So each attempt is bounded, and the two
+# mirrors (the same archive) are tried in turn. If none of that brings the packages, the
+# job fails saying so: nothing of the script was run, and nothing is claimed about it.
 apt=(-o Acquire::Retries=2 -o Acquire::http::Timeout=15 -o Acquire::https::Timeout=15 -o Acquire::ForceIPv4=true)
-lists() {   # lists SECONDS — fresh package lists, and proof that they are there
-  timeout "$1" apt-get "${apt[@]}" update -q >/dev/null 2>&1 && apt-cache show openssh-server >/dev/null 2>&1
-}
-if ! lists 75; then
-  echo "the default mirror did not deliver the package lists in 75 s — trying azure.archive.ubuntu.com"
-  sed -i -E 's#//(archive|security)\.ubuntu\.com#//azure.archive.ubuntu.com#g' \
+cp -a /etc/apt /tmp/apt.as-shipped
+mirror() {   # mirror default|azure — only an Ubuntu image has the second one
+  rm -rf /etc/apt && cp -a /tmp/apt.as-shipped /etc/apt
+  [[ $1 == default ]] || sed -i -E 's#//(archive|security)\.ubuntu\.com#//azure.archive.ubuntu.com#g' \
     /etc/apt/sources.list /etc/apt/sources.list.d/* 2>/dev/null || true
-  lists 240 || fail "no package lists from the default mirror or from the provider's — nothing of the script was run"
-fi
-timeout 300 apt-get "${apt[@]}" install -y -q --no-install-recommends openssh-server iproute2 procps util-linux >/dev/null
+}
+got=no
+for m in default azure default azure; do
+  mirror "$m"
+  if timeout 75 apt-get "${apt[@]}" update -q >/dev/null 2>&1 && apt-cache show openssh-server >/dev/null 2>&1 &&
+     timeout 150 apt-get "${apt[@]}" install -y -q --no-install-recommends openssh-server iproute2 procps util-linux >/dev/null 2>&1
+  then got=yes; break; fi
+  echo "the packages did not arrive through the $m mirror — trying the other way"
+  sleep 8
+done
+[[ $got == yes ]] || fail "no packages from either mirror after four attempts — the script itself was not run"
 # shellcheck disable=SC1091
 . /etc/os-release
 echo "== $PRETTY_NAME"
