@@ -5,7 +5,7 @@
 **Одна команда превращает свежий VPS на Debian или Ubuntu в сервер, который пускает только по вашему ключу, — и не закроет старую дверь, пока вы не прошли через новую.**
 
 [![CI](https://github.com/N0deZ3r0/server-hardening/actions/workflows/ci.yml/badge.svg)](https://github.com/N0deZ3r0/server-hardening/actions/workflows/ci.yml)
-![version](https://img.shields.io/badge/version-2026.10.26-3b5bdb)
+![version](https://img.shields.io/badge/version-2026.10.27-3b5bdb)
 ![Debian](https://img.shields.io/badge/Debian-12%20%2F%2013-a80030)
 ![Ubuntu](https://img.shields.io/badge/Ubuntu-22.04%20%2F%2024.04%20%2F%2026.04-e95420)
 ![bash](https://img.shields.io/badge/bash-%D0%BE%D0%B4%D0%B8%D0%BD%20%D1%84%D0%B0%D0%B9%D0%BB-2f9e44)
@@ -25,7 +25,7 @@ CrowdSec, усиливает ядро, включает автообновлен
 Интерфейс — на русском и английском.
 
 ```bash
-curl -fsSLo harden.sh https://github.com/N0deZ3r0/server-hardening/releases/download/v2026.10.26/harden.sh && echo "059938b7df22ef8b06cc8e0109df2f09def76f89e17aa9cc9401f4da87dca9d0  harden.sh" | sha256sum -c - && sudo bash harden.sh
+curl -fsSLo harden.sh https://github.com/N0deZ3r0/server-hardening/releases/download/v2026.10.27/harden.sh && echo "1f5ae59abadc034e57a63da958e941f0f7d70c1baa123c6ece0f8d8407a0d9d2  harden.sh" | sha256sum -c - && sudo bash harden.sh
 ```
 
 Команда скачивает конкретный релиз и сверяет его SHA-256 до запуска: если отличается хоть
@@ -343,7 +343,7 @@ sudo harden --undo                     # откатить настройку и�
 те же загрузка и контрольная сумма, а вместо настройки `--refresh`:
 
 ```bash
-curl -fsSLo harden.sh https://github.com/N0deZ3r0/server-hardening/releases/download/v2026.10.26/harden.sh && echo "059938b7df22ef8b06cc8e0109df2f09def76f89e17aa9cc9401f4da87dca9d0  harden.sh" | sha256sum -c - && sudo bash harden.sh --refresh
+curl -fsSLo harden.sh https://github.com/N0deZ3r0/server-hardening/releases/download/v2026.10.27/harden.sh && echo "1f5ae59abadc034e57a63da958e941f0f7d70c1baa123c6ece0f8d8407a0d9d2  harden.sh" | sha256sum -c - && sudo bash harden.sh --refresh
 ```
 
 `--refresh` ничего не спрашивает. Он записывает настройки ядра, правила аудита, настройки
@@ -415,7 +415,9 @@ curl -fsSLo harden.sh https://github.com/N0deZ3r0/server-hardening/releases/down
 Оставлено сознательно, с причиной для каждого:
 
 - **Человеком запускалось на одной системе, в CI — на пяти.** Человек запускал настройку
-  только на Ubuntu 24.04 (KVM, один хостер). CI запускает её целиком на виртуальной машине
+  только на Ubuntu 24.04 (KVM, один хостер) — версию 2026.10.26 там провели через весь цикл:
+  настройка, обрыв связи на вопросе о входе, `--undo`, вторая настройка, перезагрузка. CI
+  запускает её целиком на виртуальной машине
   каждой поддерживаемой версии ([tools/e2e.py](tools/e2e.py)). Первый же такой прогон
   показал, что на Ubuntu 26.04 настройка не работала никогда — sudo там это sudo-rs, и одну
   из записываемых настроек он не знает, — а на Debian 12 перестала работать в версии

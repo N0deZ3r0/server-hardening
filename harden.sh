@@ -39,7 +39,7 @@ set -Eeuo pipefail
 # explicitly where it is written.
 umask 022
 
-HARDEN_VERSION="2026.10.27-dev"
+HARDEN_VERSION="2026.10.27"
 LOG_FILE="/var/log/harden.log"
 REPORT_FILE="/root/harden-report.txt"
 BACKUP_DIR="/root/harden-backup-$(date +%Y%m%d-%H%M%S)"
@@ -565,8 +565,10 @@ install_packages() {
   step "$(T "Обновление системы и установка пакетов" "System upgrade and packages")"
   export DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a
   # Lock::Timeout — wait while apt is busy with auto-updates (common on a fresh VPS)
-  local apt_opts=(-y -o DPkg::Lock::Timeout=600 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold)
-  apt-get -o DPkg::Lock::Timeout=600 update -q
+  # Acquire::Retries — a mirror that drops one download must not end the setup at its
+  # second step; apt's own default is not to try again at all
+  local apt_opts=(-y -o DPkg::Lock::Timeout=600 -o Acquire::Retries=3 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold)
+  apt-get -o DPkg::Lock::Timeout=600 -o Acquire::Retries=3 update -q
   apt-get "${apt_opts[@]}" full-upgrade
   local -a pkgs
   read -ra pkgs <<<"$(setup_packages | xargs)"

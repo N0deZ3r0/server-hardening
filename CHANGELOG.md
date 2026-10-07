@@ -7,6 +7,22 @@ where that version does not work — it is there because someone ran it and it d
 
 The text of each release on GitHub is generated from this file.
 
+## 2026.10.27
+
+Version 2026.10.26 was run by hand on a provider's Ubuntu 24.04 image: the setup, a
+connection lost at the login question, `--check`, `--undo`, a second setup, a reboot. It
+did what it should. These were noticed on the way.
+
+- `--undo`: ping is answered again at once, not only after the next reboot.
+- On a terminal that cannot draw tmux (`TERM=dumb`) the setup runs in place instead of
+  ending with tmux's error.
+- A package download that fails once is tried again instead of ending the setup at its
+  second step.
+- CI: the run on virtual machines makes one login fail and requires fail2ban to have
+  counted it — until now "fail2ban protects SSH" had only ever meant "the jail is up". The
+  first setup there runs the published release, fetched by the README's own command.
+- README: what to do on a minimal image that has no `sudo` or no `curl`.
+
 ## 2026.10.26
 
 Found by running what no test had run before, not by reading.

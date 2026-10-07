@@ -5,7 +5,7 @@
 **One command turns a fresh Debian or Ubuntu VPS into a server that only lets in your key — and it will not close the old door until you have walked through the new one.**
 
 [![CI](https://github.com/N0deZ3r0/server-hardening/actions/workflows/ci.yml/badge.svg)](https://github.com/N0deZ3r0/server-hardening/actions/workflows/ci.yml)
-![version](https://img.shields.io/badge/version-2026.10.26-3b5bdb)
+![version](https://img.shields.io/badge/version-2026.10.27-3b5bdb)
 ![Debian](https://img.shields.io/badge/Debian-12%20%2F%2013-a80030)
 ![Ubuntu](https://img.shields.io/badge/Ubuntu-22.04%20%2F%2024.04%20%2F%2026.04-e95420)
 ![bash](https://img.shields.io/badge/bash-single%20file-2f9e44)
@@ -24,7 +24,7 @@ summary, can report to Telegram, and finishes with a Lynis audit. Later, `sudo h
 audits the server without changing anything. The interface is in English and Russian.
 
 ```bash
-curl -fsSLo harden.sh https://github.com/N0deZ3r0/server-hardening/releases/download/v2026.10.26/harden.sh && echo "059938b7df22ef8b06cc8e0109df2f09def76f89e17aa9cc9401f4da87dca9d0  harden.sh" | sha256sum -c - && sudo bash harden.sh
+curl -fsSLo harden.sh https://github.com/N0deZ3r0/server-hardening/releases/download/v2026.10.27/harden.sh && echo "1f5ae59abadc034e57a63da958e941f0f7d70c1baa123c6ece0f8d8407a0d9d2  harden.sh" | sha256sum -c - && sudo bash harden.sh
 ```
 
 The command downloads a fixed release and checks its SHA-256 before running it: if a single
@@ -341,7 +341,7 @@ On a server that is already set up, download the newer script and let it apply i
 settings — the same download and checksum, then `--refresh` instead of the setup:
 
 ```bash
-curl -fsSLo harden.sh https://github.com/N0deZ3r0/server-hardening/releases/download/v2026.10.26/harden.sh && echo "059938b7df22ef8b06cc8e0109df2f09def76f89e17aa9cc9401f4da87dca9d0  harden.sh" | sha256sum -c - && sudo bash harden.sh --refresh
+curl -fsSLo harden.sh https://github.com/N0deZ3r0/server-hardening/releases/download/v2026.10.27/harden.sh && echo "1f5ae59abadc034e57a63da958e941f0f7d70c1baa123c6ece0f8d8407a0d9d2  harden.sh" | sha256sum -c - && sudo bash harden.sh --refresh
 ```
 
 `--refresh` asks nothing. It writes the kernel settings, audit rules, auto-update settings,
@@ -411,7 +411,9 @@ The newest unreleased code is on `main` —
 Knowingly open, with the reason for each:
 
 - **Run by a person on one system, by CI on five.** A person has run the setup only on
-  Ubuntu 24.04 (KVM, one provider). CI runs it whole on a virtual machine of every
+  Ubuntu 24.04 (KVM, one provider) — version 2026.10.26 through the whole cycle there: the
+  setup, a connection lost at the login question, `--undo`, a second setup, a reboot. CI
+  runs it whole on a virtual machine of every
   supported release ([tools/e2e.py](tools/e2e.py)). The first time it did, it found that
   the setup had never worked on Ubuntu 26.04 — sudo there is sudo-rs, which does not know
   one of the settings written — and had stopped working on Debian 12 in 2026.10.15,
