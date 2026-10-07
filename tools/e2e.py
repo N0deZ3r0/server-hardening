@@ -27,6 +27,7 @@ versions 2026.10.8 to 2026.10.17 could not finish on an Ubuntu 24.04 cloud image
 that was found only when someone ran one by hand. Its own first run found two more: the
 setup stopped on Debian 12 and on Ubuntu 26.04.
 """
+import hashlib
 import http.server
 import json
 import os
@@ -610,11 +611,39 @@ def verify_undone(units_before, files_before):
         fail(f"after --undo these files are not what they were before the setup: {changed}")
 
 
+def get_the_script():
+    """Puts harden.sh on the fresh machine the way a reader of the README gets it: with the
+    install command printed there, as it stands — the download of the release and the
+    check of its SHA-256. What it needs has to be on the image as it comes.
+
+    The file fetched that way is the one the first setup runs whenever it is the file of
+    this checkout, byte for byte: then the published release itself is what is tested.
+    On a commit that changes the script, or before its release exists, the checkout's copy
+    is put in its place."""
+    say("getting the script the way the README says")
+    lines = [line.strip() for line in (ROOT / "README.md").read_text(encoding="utf-8").splitlines()
+             if line.startswith("curl -fsSLo harden.sh ") and line.rstrip().endswith("&& sudo bash harden.sh")]
+    if not lines:
+        fail("README.md has no install command of the shape this test knows")
+    fetch = lines[0].rsplit(" && sudo bash harden.sh", 1)[0]
+    r = ssh(OLD, "root", "for t in curl sha256sum sudo bash; do command -v $t >/dev/null || echo $t; done", check=False)
+    if r.stdout.split():
+        fail(f"the README's install command needs these, and the fresh image does not have them: {r.stdout.split()}")
+    r = ssh(OLD, "root", f"cd /root && rm -f harden.sh && {fetch} && sha256sum harden.sh", check=False, timeout=180)
+    print(r.stdout, r.stderr)
+    ours = hashlib.sha256((ROOT / "harden.sh").read_bytes()).hexdigest()
+    if r.returncode == 0 and ours in r.stdout:
+        print("the first setup runs the published release, fetched and verified by the README's own command")
+        return
+    print("the checkout's harden.sh is not a published release (or not yet): using the checkout's copy")
+    run("scp", *SSH, "-P", str(OLD), str(ROOT / "harden.sh"), "root@127.0.0.1:/root/harden.sh")
+
+
 def main():
     global PASSWORD
     pub = boot()
     password = PASSWORD = "E2e-" + secrets.token_urlsafe(9) + "-7q"
-    run("scp", *SSH, "-P", str(OLD), str(ROOT / "harden.sh"), "root@127.0.0.1:/root/harden.sh")
+    get_the_script()
     server = http.server.ThreadingHTTPServer(("127.0.0.1", API_PORT), BotAPI)
     threading.Thread(target=server.serve_forever, daemon=True).start()
 
@@ -633,7 +662,9 @@ def main():
     # port closed.
     # Nothing is preset: every question is asked and answered, the key is pasted, the
     # admin's address is the one the script finds for itself, and Lynis runs at the end.
-    in_tmux = drive(OLD, "root", "bash /root/harden.sh", password, "first setup",
+    # It is started with the last words of the README's command, sudo included: under sudo
+    # the address of the SSH client is not in the environment, and has to be found another way.
+    in_tmux = drive(OLD, "root", "cd /root && sudo bash harden.sh", password, "first setup",
                     term="xterm-nosuchterm", at_question=first_setup_question, typeahead=True,
                     questions=interview(pub))
     if has_tmux and not in_tmux:

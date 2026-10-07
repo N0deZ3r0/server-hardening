@@ -31,6 +31,10 @@ The command downloads a fixed release and checks its SHA-256 before running it: 
 byte differs, `sha256sum` stops the chain and nothing is executed. See
 [Releases and verification](#releases-and-verification) for what that does and does not prove.
 
+Some minimal images come without the two tools the command itself needs. Logged in as root
+and told `sudo: command not found`? Run the last part without it: `bash harden.sh`. No
+`curl`? `apt update && apt install -y curl` first. The script installs both for later.
+
 ## First, honestly, about what this protects
 
 **What actually keeps people out is key-only login.** After the run the server does not
