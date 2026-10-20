@@ -7,6 +7,17 @@ where that version does not work — it is there because someone ran it and it d
 
 The text of each release on GitHub is generated from this file.
 
+## 2026.10.28
+
+Version 2026.10.27 was taken through the whole cycle by hand on a provider's Debian 13
+image (setup without tmux, `--check`, `--undo`, a second setup, a reboot), and set up by
+its owner on the provider's Ubuntu 26.04 image. Both did what they should.
+
+- LLMNR and mDNS are switched off in systemd-resolved. On Debian 13 it answered LLMNR on
+  every address, port 5355 — not reachable through the firewall, but listed by `--check`
+  as listening publicly next to SSH. `--undo` switches them back on.
+- CI: the run on virtual machines requires that nothing but SSH listens on a public address.
+
 ## 2026.10.27
 
 Version 2026.10.26 was run by hand on a provider's Ubuntu 24.04 image: the setup, a

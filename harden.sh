@@ -39,7 +39,7 @@ set -Eeuo pipefail
 # explicitly where it is written.
 umask 022
 
-HARDEN_VERSION="2026.10.27"
+HARDEN_VERSION="2026.10.28"
 LOG_FILE="/var/log/harden.log"
 REPORT_FILE="/root/harden-report.txt"
 BACKUP_DIR="/root/harden-backup-$(date +%Y%m%d-%H%M%S)"
@@ -949,6 +949,14 @@ EOF
     systemctl disable --now "$svc.service" &>/dev/null \
       && info "$(T "Отключена служба" "Disabled service") $svc" || true
   done
+  # Name lookups for a local network (LLMNR, mDNS) are of no use to a server. On Debian 13
+  # systemd-resolved answers LLMNR on every address — port 5355, which --check then lists as
+  # listening publicly next to SSH (found on a provider's Debian 13 image). DNS is untouched.
+  if systemctl is-active --quiet systemd-resolved 2>/dev/null; then
+    mkdir -p /etc/systemd/resolved.conf.d
+    printf '[Resolve]\nLLMNR=no\nMulticastDNS=no\n' >/etc/systemd/resolved.conf.d/99-hardening.conf
+    systemctl try-restart systemd-resolved &>/dev/null || true
+  fi
 
   chmod 600 /etc/crontab 2>/dev/null || true
   chmod 700 /etc/cron.d /etc/cron.daily /etc/cron.hourly /etc/cron.weekly /etc/cron.monthly 2>/dev/null || true
@@ -2595,6 +2603,7 @@ run_undo() {
         /etc/modprobe.d/99-hardening.conf /etc/security/limits.d/99-nocore.conf \
         /etc/systemd/coredump.conf.d/99-hardening.conf /etc/systemd/journald.conf.d/99-hardening.conf \
         /etc/security/pwquality.conf.d/99-hardening.conf /etc/sudoers.d/99-hardening /etc/logrotate.d/harden-sudo \
+        /etc/systemd/resolved.conf.d/99-hardening.conf \
         /etc/audit/rules.d/99-hardening.rules /etc/needrestart/conf.d/99-hardening.conf \
         /etc/apt/apt.conf.d/52-hardening-unattended /etc/apt/apt.conf.d/53-hardening-crowdsec \
         "$F2B_JAIL" /usr/local/bin/server-status /etc/profile.d/99-server-status.sh \
@@ -2632,6 +2641,7 @@ run_undo() {
   done
   sysctl --system >/dev/null 2>&1 || true
   systemctl restart systemd-journald || true
+  systemctl try-restart systemd-resolved &>/dev/null || true
   if command -v augenrules >/dev/null; then augenrules --load >/dev/null 2>&1 || true; fi
   # fail2ban: with the setup's jail gone it would go on with the distribution's defaults
   # and no exception for the admin's address — and it reads the recent log when it starts,

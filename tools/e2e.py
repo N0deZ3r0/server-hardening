@@ -422,6 +422,12 @@ def verify(password, when, port=NEW, admin=GATEWAY):
     pids = {line.split("pid=")[1].split(",")[0] for line in r.stdout.splitlines() if "pid=" in line}
     if len(pids) != 1:
         fail(f"more than one sshd daemon is listening: {pids}")
+    # Nothing but SSH listens on a public address (the DHCP client aside). On Debian 13
+    # systemd-resolved did, on port 5355 (LLMNR) — found on a provider's image, not by this test.
+    r = ssh(port, "alex", "ss -Hltnu | awk '{print $1, $5}' | grep -vE ' (127\\.|\\[::1\\]|\\[::ffff:127\\.)' | grep -vE '^udp .*:68$'")
+    public = sorted({line.rsplit(":", 1)[-1] for line in r.stdout.split("\n") if line.strip()})
+    if public != [str(port)]:
+        fail(f"ports listening on a public address besides SSH: {r.stdout.strip()}")
 
     fw = ssh(port, "alex", sudo(password, "ufw status")).stdout
     print(fw)
