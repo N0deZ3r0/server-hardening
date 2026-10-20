@@ -1395,10 +1395,10 @@ EOF
 #      confirms a new login in time, whatever happens to this script or the session.
 filter_algos() {  # filter_algos <ssh -Q type> algorithms... -> the supported ones, comma-separated
   local type=$1; shift
-  local supported out=() a
+  local supported found=() a
   supported=$(ssh -Q "$type" 2>/dev/null)
-  for a in "$@"; do grep -qxF "$a" <<<"$supported" && out+=("$a"); done
-  (IFS=,; echo "${out[*]}")
+  for a in "$@"; do grep -qxF "$a" <<<"$supported" && found+=("$a"); done
+  (IFS=,; echo "${found[*]}")
 }
 
 ssh_service() { systemctl list-unit-files ssh.service &>/dev/null && echo ssh || echo sshd; }
@@ -1415,7 +1415,7 @@ SSH_AUTH_POLICY=(
 
 # write_sshd_config "port..." [file] — our drop-in, $SSHD_DROPIN unless a file is named
 write_sshd_config() {
-  local ports=$1 out=${2:-$SSHD_DROPIN} p kex ciphers macs hostkeys
+  local ports=$1 dest=${2:-$SSHD_DROPIN} p kex ciphers macs hostkeys
   kex=$(filter_algos kex mlkem768x25519-sha256 sntrup761x25519-sha512 sntrup761x25519-sha512@openssh.com \
         curve25519-sha256 curve25519-sha256@libssh.org diffie-hellman-group18-sha512 diffie-hellman-group16-sha512)
   ciphers=$(filter_algos cipher chacha20-poly1305@openssh.com aes256-gcm@openssh.com aes128-gcm@openssh.com aes256-ctr aes128-ctr)
@@ -1475,8 +1475,8 @@ EOF
     [[ -n $macs ]]     && echo "MACs $macs"
     [[ -n $hostkeys ]] && echo "HostKeyAlgorithms $hostkeys"
     true
-  } >"$out"
-  chmod 600 "$out"
+  } >"$dest"
+  chmod 600 "$dest"
 }
 
 # Ubuntu 22.10 and later start sshd through ssh.socket. Its ports are taken from
