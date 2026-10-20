@@ -9,6 +9,14 @@ The text of each release on GitHub is generated from this file.
 
 ## Unreleased
 
+Run by hand on a provider's Ubuntu 24.04 image: the setup, a reboot, a port change left
+unconfirmed with the script killed (the timer put SSH back), `--undo`. It found two things,
+both fixed below: a false warning after the switch, and files left in `/run/harden`.
+
+- After a switch in socket mode the setup no longer warns that the new login rules are not
+  in effect: `sshd -T` could not run there, and its silence was read as "overridden".
+- The rollback script and the test sshd's configuration are removed from `/run/harden`
+  once the login is confirmed, and by `--undo`.
 - **SSH switch, rebuilt** ([ADR 0001](docs/decisions/0001-ssh-port-switch.md)). The new
   port is tried on a second sshd started for the test alone; the running sshd is not
   touched until that login works. Then, before the server's own sshd takes the new

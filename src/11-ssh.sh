@@ -253,6 +253,7 @@ ssh_rollback_now() {
   disarm_ssh_rollback
   warn "$(T "Возвращаю SSH к прежнему состоянию..." "Putting SSH back the way it was...")"
   bash "$SSH_ROLLBACK" || true
+  rm -rf "$SSH_ROLLBACK" "$SSHD_TEST_DIR"
 }
 
 # The upgrade keeps a provider-edited sshd_config and saves the packaged one beside it
@@ -409,6 +410,7 @@ setup_ssh() {
   ssh_rollback_pending || die "$(T "Время на подтверждение вышло, и SSH уже вернулся к прежнему состоянию. Запусти настройку снова." \
                                   "The time to confirm ran out and SSH has already gone back to how it was. Run the setup again.")"
   disarm_ssh_rollback
+  rm -rf "$SSH_ROLLBACK" "$SSHD_TEST_DIR"   # in /run and root-only, but not left lying about
 
   local closed=""
   for p in "${old_ports[@]}"; do

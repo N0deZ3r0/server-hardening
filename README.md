@@ -434,9 +434,12 @@ Knowingly open, with the reason for each:
   the unit as inactive freezes PID 1. Since the release after 2026.10.28 the units are not
   switched at all: the port reaches `ssh.socket` the way Ubuntu documents it, through
   `sshd-socket-generator` ([ADR 0001](docs/decisions/0001-ssh-port-switch.md)).
-- **The new SSH switch has run in CI and on VMs only.** The test sshd, the socket kept and
-  the timed rollback (the release after 2026.10.28) run on every change on a VM of each
-  supported release, but no person has taken them through a provider's image yet.
+- **The new SSH switch (the release after 2026.10.28) has been run by hand once,** on a
+  provider's Ubuntu 24.04 image (KVM, sshd through `ssh.socket`, OpenSSH 9.6): the setup
+  with both login checks, a reboot, then a port change abandoned at the second check with
+  the script killed — the timer put SSH back ten minutes later — and `--undo`, after which
+  the system files were byte for byte what they were. That run found a false warning,
+  fixed since. On Debian and on Ubuntu 22.04 and 26.04 it has run in CI only.
 - **Live runs are on one server** (Ubuntu 24.04, KVM): the full setup from a clean image,
   Telegram alerts, `--check`. Those runs found nine things CI had missed — a false failure
   in the audit, key-lookup log lines reported as logins, two alerts per connect from clients

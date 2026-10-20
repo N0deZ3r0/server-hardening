@@ -1640,6 +1640,7 @@ ssh_rollback_now() {
   disarm_ssh_rollback
   warn "$(T "Возвращаю SSH к прежнему состоянию..." "Putting SSH back the way it was...")"
   bash "$SSH_ROLLBACK" || true
+  rm -rf "$SSH_ROLLBACK" "$SSHD_TEST_DIR"
 }
 
 # The upgrade keeps a provider-edited sshd_config and saves the packaged one beside it
@@ -1796,6 +1797,7 @@ setup_ssh() {
   ssh_rollback_pending || die "$(T "Время на подтверждение вышло, и SSH уже вернулся к прежнему состоянию. Запусти настройку снова." \
                                   "The time to confirm ran out and SSH has already gone back to how it was. Run the setup again.")"
   disarm_ssh_rollback
+  rm -rf "$SSH_ROLLBACK" "$SSHD_TEST_DIR"   # in /run and root-only, but not left lying about
 
   local closed=""
   for p in "${old_ports[@]}"; do
@@ -2623,7 +2625,7 @@ run_undo() {
         /etc/systemd/system/harden-daily-report.timer /etc/systemd/system/*.service.d/harden-alert.conf \
         /usr/local/sbin/harden-notify /usr/local/sbin/harden-login-watch /usr/local/sbin/harden-daily-report
   for f in /etc/systemd/system/*.service.d; do rmdir "$f" 2>/dev/null || true; done
-  rm -rf /etc/harden
+  rm -rf /etc/harden "$SSH_ROLLBACK" "$SSHD_TEST_DIR"
   systemctl unmask apport.service &>/dev/null || true
   chmod 644 /etc/crontab 2>/dev/null || true
   chmod 755 /etc/cron.d /etc/cron.daily /etc/cron.hourly /etc/cron.weekly /etc/cron.monthly 2>/dev/null || true

@@ -419,6 +419,11 @@ def verify(password, when, port=NEW, admin=GATEWAY):
     # systemd has to be answering: a frozen PID 1 is the failure CI once produced here
     if ssh(port, "alex", sudo(password, "systemctl is-active ssh")).stdout.strip() != "active":
         fail("ssh.service is not active")
+    # the login was confirmed: the timed way back is disarmed, and cleared away
+    r = ssh(port, "alex", sudo(password, "sh -c 'systemctl is-active harden-ssh-rollback.timer; ls /run/harden'"), check=False)
+    if r.stdout.split()[:1] == ["active"] or "ssh-rollback.sh" in r.stdout or "sshd-test" in r.stdout:
+        print(r.stdout)
+        fail("after a confirmed setup the rollback timer or its files are still there")
     r = ssh(port, "alex", sudo(password, "ss -Hltnp") + " | grep sshd | grep -v 127.0.0.1 | grep -v '\\[::1\\]'")
     print(r.stdout)
     gone = [22] + [p for p in (NEW, THIRD) if p != port]
@@ -630,13 +635,14 @@ def verify_undone(units_before, files_before):
     r = ssh(OLD, "root", "systemctl is-active ssh; ufw status | head -1; "
                          "ls /etc/ssh/sshd_config.d/00-hardening.conf /etc/sysctl.d/99-hardening.conf "
                          "/etc/harden /etc/fail2ban/jail.d/99-hardening.local /usr/local/bin/server-status "
-                         "/usr/local/sbin/harden-notify /etc/systemd/system/harden-login-watch.service 2>&1; "
+                         "/usr/local/sbin/harden-notify /etc/systemd/system/harden-login-watch.service "
+                         "/run/harden/ssh-rollback.sh 2>&1; "
                          "echo watch=$(systemctl is-active harden-login-watch.service)",
             check=False)   # ls is meant to find nothing, and says so with its exit status
     print(r.stdout)
     if "active" not in r.stdout.splitlines()[:1][0] or "Status: inactive" not in r.stdout:
         fail("after --undo: sshd is not running, or the firewall is still on")
-    if r.stdout.count("No such file or directory") != 7:
+    if r.stdout.count("No such file or directory") != 8:
         fail("after --undo some of the files the setup added are still there")
     if "watch=active" in r.stdout:
         fail("after --undo the Telegram login watcher is still running")
