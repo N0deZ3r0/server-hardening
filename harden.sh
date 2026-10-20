@@ -832,7 +832,7 @@ write_sysctl_conf() {
     echo "# Written by harden.sh. Replaces /usr/lib/sysctl.d/99-protect-links.conf, which loads"
     echo "# after 99-hardening.conf and would lower fs.protected_fifos to 1."
     for kv in "${SYSCTL_SETTINGS[@]}"; do
-      [[ $kv == fs.protected_* ]] && echo "${kv%%=*} = ${kv#*=}"
+      if [[ $kv == fs.protected_* ]]; then echo "${kv%%=*} = ${kv#*=}"; fi
     done
   } >"$PROTECT_LINKS_CONF"
 }
@@ -1581,7 +1581,7 @@ write_test_sshd_config() {
   install -d -m 700 "$SSHD_TEST_DIR/conf.d"
   write_sshd_config "$SSH_PORT" "$SSHD_TEST_DIR/conf.d/${SSHD_DROPIN##*/}"
   for f in /etc/ssh/sshd_config.d/*.conf; do
-    [[ -f $f && $f != "$SSHD_DROPIN" ]] && ln -s "$f" "$SSHD_TEST_DIR/conf.d/"
+    if [[ -f $f && $f != "$SSHD_DROPIN" ]]; then ln -s "$f" "$SSHD_TEST_DIR/conf.d/"; fi
   done
   sed -E "s#^([[:space:]]*Include[[:space:]]+)/etc/ssh/sshd_config\\.d/\\*\\.conf#\\1$SSHD_TEST_DIR/conf.d/*.conf#" \
     /etc/ssh/sshd_config >"$SSHD_TEST_DIR/sshd_config"

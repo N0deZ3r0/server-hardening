@@ -22,6 +22,17 @@ refute() {
   if "$@"; then echo "expected to fail: $*" >&2; return 1; fi
 }
 
+# strict "snippet" — runs it the way the script runs, with its own set -Eeuo pipefail and
+# ERR trap. There a function that ends on a false test returns 1 and stops the setup; the
+# relaxed settings of the other tests would hide that.
+strict() {
+  run bash -c 'source "$1"; eval "$2"' _ "$BATS_TEST_DIRNAME/../harden.sh" "$1"
+  if [ "$status" -ne 0 ] || [[ $output == *"Error at line"* ]]; then
+    echo "$output" >&2
+    return 1
+  fi
+}
+
 # ---- interface ----
 
 @test "T picks the language of the interface" {
@@ -193,6 +204,23 @@ refute() {
   }
   run sysctl_overridden
   [ "$output" = "kernel.sysrq fs.protected_fifos " ]
+}
+
+# ---- under the script's own errexit ----
+
+@test "the functions that write files finish under the script's own set -e" {
+  strict "SYSCTL_CONF=$TMP/99-hardening.conf PROTECT_LINKS_CONF=$TMP/99-protect-links.conf; write_sysctl_conf"
+  [ "$(grep -c . "$TMP/99-protect-links.conf")" -eq 6 ]
+  strict "NEW_USER=alex; write_sshd_config 2233 $TMP/sshd.conf"
+  strict "systemctl() { [ \"\$*\" = 'list-unit-files ssh.service' ]; }
+          SSH_ROLLBACK=$TMP/run/ssh-rollback.sh BACKUP_DIR=$TMP; write_ssh_rollback; ssh_apply_script"
+  strict "printf '%s\n' 'ssh-ed25519 AAAA a' >$TMP/k; normalize_pubkeys $TMP/k"
+}
+
+@test "the checks that may find nothing finish under the script's own set -e" {
+  strict "sysctl() { return 1; }; sysctl_overridden"                 # a kernel with none of the keys
+  strict "ss() { :; }; sshd_still_on 22 2233"                       # nothing listens
+  strict "systemctl() { return 1; }; ssh_apply_script"              # neither socket nor service found
 }
 
 # ---- saved answers ----

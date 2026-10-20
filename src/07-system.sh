@@ -41,7 +41,7 @@ write_sysctl_conf() {
     echo "# Written by harden.sh. Replaces /usr/lib/sysctl.d/99-protect-links.conf, which loads"
     echo "# after 99-hardening.conf and would lower fs.protected_fifos to 1."
     for kv in "${SYSCTL_SETTINGS[@]}"; do
-      [[ $kv == fs.protected_* ]] && echo "${kv%%=*} = ${kv#*=}"
+      if [[ $kv == fs.protected_* ]]; then echo "${kv%%=*} = ${kv#*=}"; fi
     done
   } >"$PROTECT_LINKS_CONF"
 }

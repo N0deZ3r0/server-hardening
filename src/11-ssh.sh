@@ -194,7 +194,7 @@ write_test_sshd_config() {
   install -d -m 700 "$SSHD_TEST_DIR/conf.d"
   write_sshd_config "$SSH_PORT" "$SSHD_TEST_DIR/conf.d/${SSHD_DROPIN##*/}"
   for f in /etc/ssh/sshd_config.d/*.conf; do
-    [[ -f $f && $f != "$SSHD_DROPIN" ]] && ln -s "$f" "$SSHD_TEST_DIR/conf.d/"
+    if [[ -f $f && $f != "$SSHD_DROPIN" ]]; then ln -s "$f" "$SSHD_TEST_DIR/conf.d/"; fi
   done
   sed -E "s#^([[:space:]]*Include[[:space:]]+)/etc/ssh/sshd_config\\.d/\\*\\.conf#\\1$SSHD_TEST_DIR/conf.d/*.conf#" \
     /etc/ssh/sshd_config >"$SSHD_TEST_DIR/sshd_config"
