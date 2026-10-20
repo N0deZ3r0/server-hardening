@@ -38,7 +38,7 @@ set -Eeuo pipefail
 # where it is written. (Lessons from live runs: docs/decisions/0004-lessons-from-live-runs.md)
 umask 022
 
-HARDEN_VERSION="2026.10.29"
+HARDEN_VERSION="2026.10.30"
 LOG_FILE="/var/log/harden.log"
 REPORT_FILE="/root/harden-report.txt"
 BACKUP_DIR="/root/harden-backup-$(date +%Y%m%d-%H%M%S)"
@@ -1615,9 +1615,12 @@ SSH_CONFIRM_SECONDS=${HARDEN_SSH_CONFIRM_SECONDS:-600}
 # after a reboot there is no timer either, and the settings confirmed at stage 1 stay.
 write_ssh_rollback() {
   install -d -m 700 "${SSH_ROLLBACK%/*}"
+  rm -f "$(ssh_rollback_mark)"
   {
     echo '#!/bin/bash'
     echo "# Written by harden.sh $HARDEN_VERSION: puts SSH back the way it was before this run."
+    # The first thing it does is say that it has begun: settle_ssh_rollback reads that
+    echo "touch $(printf '%q' "$(ssh_rollback_mark)")"
     echo "systemctl stop $SSHD_TEST_UNIT 2>/dev/null"
     echo "rm -f $(printf '%q' "$SSHD_DROPIN")"
     echo "cp -a $(printf '%q' "$BACKUP_DIR/ssh/.") /etc/ssh/"
@@ -1636,11 +1639,33 @@ disarm_ssh_rollback() {
   systemctl reset-failed "$SSH_ROLLBACK_UNIT.timer" "$SSH_ROLLBACK_UNIT.service" &>/dev/null || true
 }
 ssh_rollback_pending() { systemctl is-active --quiet "$SSH_ROLLBACK_UNIT.timer"; }
+ssh_rollback_mark() { printf '%s' "${SSH_ROLLBACK%/*}/ssh-rollback.began"; }
+
+# The way back and the admin's "yes" must not cross. The timer is stopped first, so it can
+# no longer start the way back; if it has started it already, the way back is let run to
+# its end — it is then the outcome — and never cut off. Stopping its service as well, as
+# this used to, could stop it half-way: the old files on disk under a daemon still running
+# the new ones, or no listener at all — just before the old port is closed in the firewall.
+# The window was the second or two the way back takes, at the moment the time runs out.
+settle_ssh_rollback() {  # 0: it never began, and now never will. 1: SSH has gone back.
+  local busy='^(active|activating|deactivating|reloading)$' state
+  systemctl stop "$SSH_ROLLBACK_UNIT.timer" &>/dev/null || true
+  state=$(systemctl show -p ActiveState --value "$SSH_ROLLBACK_UNIT.service" 2>/dev/null || true)
+  if [[ ! -e $(ssh_rollback_mark) && ! $state =~ $busy ]]; then
+    systemctl reset-failed "$SSH_ROLLBACK_UNIT.timer" &>/dev/null || true
+    return 0
+  fi
+  while [[ $(systemctl show -p ActiveState --value "$SSH_ROLLBACK_UNIT.service" 2>/dev/null || true) =~ $busy ]]; do
+    sleep 0.5
+  done
+  return 1
+}
+
 ssh_rollback_now() {
-  disarm_ssh_rollback
   warn "$(T "Возвращаю SSH к прежнему состоянию..." "Putting SSH back the way it was...")"
-  bash "$SSH_ROLLBACK" || true
-  rm -rf "$SSH_ROLLBACK" "$SSHD_TEST_DIR"
+  # one the timer has begun already is waited for; otherwise it is run here
+  if settle_ssh_rollback; then bash "$SSH_ROLLBACK" || true; fi
+  rm -rf "$SSH_ROLLBACK" "$(ssh_rollback_mark)" "$SSHD_TEST_DIR"
 }
 
 # The upgrade keeps a provider-edited sshd_config and saves the packaged one beside it
@@ -1793,11 +1818,13 @@ setup_ssh() {
     die "$(T "SSH возвращён к прежнему состоянию. Firewall пропускает оба порта. Проверь ключ и запусти снова." \
              "SSH is back to how it was. The firewall allows both ports. Check the key and run again.")"
   fi
-  # A "yes" that came after the timer had already put SSH back is not a confirmation
-  ssh_rollback_pending || die "$(T "Время на подтверждение вышло, и SSH уже вернулся к прежнему состоянию. Запусти настройку снова." \
-                                  "The time to confirm ran out and SSH has already gone back to how it was. Run the setup again.")"
-  disarm_ssh_rollback
-  rm -rf "$SSH_ROLLBACK" "$SSHD_TEST_DIR"   # in /run and root-only, but not left lying about
+  # A "yes" that came after the timer had begun putting SSH back is not a confirmation
+  if ! settle_ssh_rollback; then
+    rm -rf "$SSH_ROLLBACK" "$(ssh_rollback_mark)" "$SSHD_TEST_DIR"
+    die "$(T "Время на подтверждение вышло, и SSH уже вернулся к прежнему состоянию. Запусти настройку снова." \
+             "The time to confirm ran out and SSH has already gone back to how it was. Run the setup again.")"
+  fi
+  rm -rf "$SSH_ROLLBACK" "$(ssh_rollback_mark)" "$SSHD_TEST_DIR"   # in /run and root-only, but not left lying about
 
   local closed=""
   for p in "${old_ports[@]}"; do
@@ -2625,7 +2652,7 @@ run_undo() {
         /etc/systemd/system/harden-daily-report.timer /etc/systemd/system/*.service.d/harden-alert.conf \
         /usr/local/sbin/harden-notify /usr/local/sbin/harden-login-watch /usr/local/sbin/harden-daily-report
   for f in /etc/systemd/system/*.service.d; do rmdir "$f" 2>/dev/null || true; done
-  rm -rf /etc/harden "$SSH_ROLLBACK" "$SSHD_TEST_DIR"
+  rm -rf /etc/harden "$SSH_ROLLBACK" "$(ssh_rollback_mark)" "$SSHD_TEST_DIR"
   systemctl unmask apport.service &>/dev/null || true
   chmod 644 /etc/crontab 2>/dev/null || true
   chmod 755 /etc/cron.d /etc/cron.daily /etc/cron.hourly /etc/cron.weekly /etc/cron.monthly 2>/dev/null || true

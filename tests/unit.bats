@@ -167,6 +167,8 @@ strict() {
   grep -qF 'cp -a '"$TMP"'/backup\ dir/ssh/. /etc/ssh/' "$SSH_ROLLBACK"
   grep -qx 'systemctl reload-or-restart ssh.service' "$SSH_ROLLBACK"
   grep -qF "systemctl stop $SSHD_TEST_UNIT" "$SSH_ROLLBACK"
+  # before anything else it says that it has begun, for settle_ssh_rollback to see
+  [ "$(sed -n 3p "$SSH_ROLLBACK")" = "touch $TMP/run/ssh-rollback.began" ]
 }
 
 @test "sshd_still_on names the ports sshd or its socket still holds" {

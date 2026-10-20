@@ -1,0 +1,3 @@
+# Python's compiled files (tools/e2e.py is run in place)
+__pycache__/
+*.pyc

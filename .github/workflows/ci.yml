@@ -492,10 +492,22 @@ jobs:
           sudo test ! -e /etc/ssh/sshd_config.d/00-hardening.conf || { echo "::error::the timer did not take the new settings back"; exit 1; }
           sudo bash -c 'source ./harden.sh; wait_sshd_listening 22'
           test -z "$(sudo bash -c 'source ./harden.sh; sshd_still_on 2233')"
+          # A "yes" that crosses the timer: the way back has begun when the answer comes. It
+          # has to be let finish and then be the outcome; cut off half-way, as it once could
+          # be, it left the old files on disk under a daemon still running the new ones.
+          # A slow way back puts the answer in the middle of it.
+          sudo bash -c 'source ./harden.sh; BACKUP_DIR=/root/ci-backup; SSHD_DROPIN=/etc/ssh/sshd_config.d/00-hardening.conf
+            NEW_USER=runner; write_ssh_rollback; sed -i "3a sleep 4" "$SSH_ROLLBACK"; arm_ssh_rollback 3
+            write_sshd_config 2233 && ssh_apply && wait_sshd_listening 2233
+            sleep 4
+            if settle_ssh_rollback; then echo "::error::a way back that had begun was taken for a confirmation"; exit 1; fi'
+          sudo test ! -e /etc/ssh/sshd_config.d/00-hardening.conf || { echo "::error::the way back was cut off half-way"; exit 1; }
+          sudo bash -c 'source ./harden.sh; wait_sshd_listening 22'
+          test -z "$(sudo bash -c 'source ./harden.sh; sshd_still_on 2233')"
           # ...and a confirmed login disarms it: nothing is taken back
           sudo bash -c 'source ./harden.sh; BACKUP_DIR=/root/ci-backup; SSHD_DROPIN=/etc/ssh/sshd_config.d/00-hardening.conf
             NEW_USER=runner; write_ssh_rollback; arm_ssh_rollback 5
-            write_sshd_config 2233 && ssh_apply && wait_sshd_listening 2233; disarm_ssh_rollback'
+            write_sshd_config 2233 && ssh_apply && wait_sshd_listening 2233; settle_ssh_rollback'
           if sudo bash -c 'source ./harden.sh; ssh_rollback_pending'; then echo "::error::still armed"; exit 1; fi
           sleep 8
           sudo test -e /etc/ssh/sshd_config.d/00-hardening.conf

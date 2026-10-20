@@ -7,6 +7,18 @@ where that version does not work — it is there because someone ran it and it d
 
 The text of each release on GitHub is generated from this file.
 
+## 2026.10.30
+
+Found by reading the rebuilt SSH switch of 2026.10.29.
+
+- SSH switch: a "yes" given in the second or two in which the timer was already putting SSH
+  back cut the way back off half-way — the old files on disk under a daemon still running the
+  new ones, or no listener at all — and the old port was closed in the firewall right after.
+  The timer is now stopped first; a way back that has begun is let finish, and is then the
+  outcome. Affects 2026.10.29 only; CI makes the answer and the timer cross on purpose.
+- Repository: a compiled Python file that had been committed is removed, and such files are
+  ignored.
+
 ## 2026.10.29
 
 Run by hand on a provider's Ubuntu 24.04 image: the setup, a reboot, a port change left
