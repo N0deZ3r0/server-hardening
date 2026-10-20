@@ -388,14 +388,18 @@ collect_answers() {
   if [[ -n ${SSH_PUBKEY:-} ]]; then
     printf '%s\n' "$SSH_PUBKEY" >"$PUBKEY_FILE"
   elif [[ -n ${GITHUB_KEYS_USER:-} ]]; then
-    curl -fsSL "https://github.com/${GITHUB_KEYS_USER}.keys" >"$PUBKEY_FILE" || true
+    if valid_github_user "$GITHUB_KEYS_USER"; then
+      curl -fsSL "https://github.com/${GITHUB_KEYS_USER}.keys" >"$PUBKEY_FILE" || true
+    else
+      warn "$(T "Неверный GITHUB_KEYS_USER:" "Invalid GITHUB_KEYS_USER:") $GITHUB_KEYS_USER"
+    fi
   fi
   # Where the admin came in through another account and sudo (AWS, Oracle, Azure), the key
   # that works is in that account's file: root's there carries a forced command ("Please
   # login as the user…") and is skipped, being a line that does not start with a key.
   local key_from=/root/.ssh/authorized_keys
   if [[ -n ${SUDO_USER:-} && $SUDO_USER != root ]]; then key_from+=" $(home_of "$SUDO_USER")/.ssh/authorized_keys"; fi
-  while ! check_pubkeys "$PUBKEY_FILE"; do
+  while ! { normalize_pubkeys "$PUBKEY_FILE" && check_pubkeys "$PUBKEY_FILE"; }; do
     echo
     T "Откуда взять публичный SSH-ключ?" "Where should the public SSH key come from?"; echo
     T "  1) Вставить вручную (строка из ~/.ssh/id_ed25519.pub)" "  1) Paste it (the line from ~/.ssh/id_ed25519.pub)"; echo
@@ -404,7 +408,11 @@ collect_answers() {
     ask "$(T "Выбор" "Choice")" "1"
     case $REPLY in
       2) ask "$(T "Ник на GitHub" "GitHub username")"
-         curl -fsSL "https://github.com/${REPLY}.keys" >"$PUBKEY_FILE" || warn "$(T "Не удалось скачать ключи" "Could not download the keys")" ;;
+         if ! valid_github_user "$REPLY"; then
+           warn "$(T "Такого имени на GitHub быть не может:" "That cannot be a GitHub username:") $REPLY"
+         elif ! curl -fsSL "https://github.com/${REPLY}.keys" >"$PUBKEY_FILE"; then
+           warn "$(T "Не удалось скачать ключи" "Could not download the keys")"
+         fi ;;
       3)
          # shellcheck disable=SC2086  # a list of paths
          cat $key_from 2>/dev/null | awk '!seen[$0]++' >"$PUBKEY_FILE" || true
@@ -533,13 +541,18 @@ collect_answers() {
   ask_yn "$(T "Начать настройку?" "Start?")" y || die "$(T "Отменено." "Cancelled.")"
 }
 
-check_pubkeys() {  # is the key file usable?
+# normalize_pubkeys FILE — keep the lines that are public keys, drop everything else
+# (comments, options, a stray private key). 1 when no key is left.
+normalize_pubkeys() {
   local f=$1
   [[ -s $f ]] || return 1
-  # keep key lines only
-  grep -E '^(ssh-ed25519|sk-ssh-ed25519@openssh.com|ssh-rsa|ecdsa-sha2-nistp(256|384|521)|sk-ecdsa-sha2-nistp256@openssh.com) ' "$f" >"$f.clean" \
-    || { rm -f "$f.clean"; warn "$(T "Ключи не найдены" "No keys found")"; return 1; }
+  grep -E '^(ssh-ed25519|sk-ssh-ed25519@openssh.com|ssh-rsa|ecdsa-sha2-nistp(256|384|521)|sk-ecdsa-sha2-nistp256@openssh.com) ' "$f" >"$f.clean"     || { rm -f "$f.clean"; warn "$(T "Ключи не найдены" "No keys found")"; return 1; }
   mv "$f.clean" "$f"
+}
+
+# check_pubkeys FILE — are the keys usable? Changes nothing; weak RSA keys are named.
+check_pubkeys() {
+  local f=$1 bits type
   if ! ssh-keygen -lf "$f" >/dev/null 2>&1; then warn "$(T "Ключ повреждён" "The key is damaged")"; return 1; fi
   while read -r bits type; do
     if [[ $type == "(RSA)" ]] && (( bits < 3072 )); then
@@ -548,6 +561,9 @@ check_pubkeys() {  # is the key file usable?
   done < <(ssh-keygen -lf "$f" | awk '{print $1, $NF}')
   return 0
 }
+
+# A GitHub username goes into a URL: letters, digits and single hyphens, at most 39
+valid_github_user() { [[ $1 =~ ^[A-Za-z0-9]([A-Za-z0-9-]{0,37}[A-Za-z0-9])?$ && $1 != *--* ]]; }
 
 # ---------- 2. packages ----------
 # Everything the setup installs. CI asks apt on each supported release whether these exist
@@ -782,77 +798,59 @@ disable_apport() {
 # ---------- 4. system ----------
 SYSCTL_CONF=/etc/sysctl.d/99-hardening.conf
 
+# The kernel settings, in one list: written by write_sysctl_conf, and compared with the
+# live values by sysctl_overridden — after the setup, and by --check on any server.
+SYSCTL_SETTINGS=(
+  # kernel
+  kernel.kptr_restrict=2 kernel.dmesg_restrict=1 kernel.unprivileged_bpf_disabled=1
+  net.core.bpf_jit_harden=2 kernel.yama.ptrace_scope=1 kernel.sysrq=0
+  kernel.randomize_va_space=2 kernel.perf_event_paranoid=3 fs.suid_dumpable=0
+  fs.protected_hardlinks=1 fs.protected_symlinks=1 fs.protected_fifos=2 fs.protected_regular=2
+  # IPv4
+  net.ipv4.tcp_syncookies=1 net.ipv4.tcp_rfc1337=1
+  net.ipv4.conf.all.rp_filter=1 net.ipv4.conf.default.rp_filter=1
+  net.ipv4.conf.all.accept_redirects=0 net.ipv4.conf.default.accept_redirects=0
+  net.ipv4.conf.all.secure_redirects=0 net.ipv4.conf.default.secure_redirects=0
+  net.ipv4.conf.all.send_redirects=0 net.ipv4.conf.default.send_redirects=0
+  net.ipv4.conf.all.accept_source_route=0 net.ipv4.conf.default.accept_source_route=0
+  net.ipv4.conf.all.log_martians=1 net.ipv4.conf.default.log_martians=1
+  net.ipv4.icmp_echo_ignore_broadcasts=1 net.ipv4.icmp_ignore_bogus_error_responses=1
+  # IPv6
+  net.ipv6.conf.all.accept_redirects=0 net.ipv6.conf.default.accept_redirects=0
+  net.ipv6.conf.all.accept_source_route=0 net.ipv6.conf.default.accept_source_route=0
+  # misc (Lynis KRNL-6000)
+  dev.tty.ldisc_autoload=0 kernel.core_uses_pid=1 kernel.ctrl-alt-del=0
+)
+# Speed, not security: written, but a different value is not reported
+SYSCTL_PERFORMANCE=(net.core.default_qdisc=fq net.ipv4.tcp_congestion_control=bbr)
+
 write_sysctl_conf() {
-  cat >"$SYSCTL_CONF" <<'EOF'
-# --- kernel ---
-kernel.kptr_restrict = 2
-kernel.dmesg_restrict = 1
-kernel.unprivileged_bpf_disabled = 1
-net.core.bpf_jit_harden = 2
-kernel.yama.ptrace_scope = 1
-kernel.sysrq = 0
-kernel.randomize_va_space = 2
-kernel.perf_event_paranoid = 3
-fs.suid_dumpable = 0
-fs.protected_hardlinks = 1
-fs.protected_symlinks = 1
-fs.protected_fifos = 2
-fs.protected_regular = 2
-# --- IPv4 ---
-net.ipv4.tcp_syncookies = 1
-net.ipv4.tcp_rfc1337 = 1
-net.ipv4.conf.all.rp_filter = 1
-net.ipv4.conf.default.rp_filter = 1
-net.ipv4.conf.all.accept_redirects = 0
-net.ipv4.conf.default.accept_redirects = 0
-net.ipv4.conf.all.secure_redirects = 0
-net.ipv4.conf.default.secure_redirects = 0
-net.ipv4.conf.all.send_redirects = 0
-net.ipv4.conf.default.send_redirects = 0
-net.ipv4.conf.all.accept_source_route = 0
-net.ipv4.conf.default.accept_source_route = 0
-net.ipv4.conf.all.log_martians = 1
-net.ipv4.conf.default.log_martians = 1
-net.ipv4.icmp_echo_ignore_broadcasts = 1
-net.ipv4.icmp_ignore_bogus_error_responses = 1
-# --- IPv6 ---
-net.ipv6.conf.all.accept_redirects = 0
-net.ipv6.conf.default.accept_redirects = 0
-net.ipv6.conf.all.accept_source_route = 0
-net.ipv6.conf.default.accept_source_route = 0
-# --- performance ---
-net.core.default_qdisc = fq
-net.ipv4.tcp_congestion_control = bbr
-# --- misc (Lynis KRNL-6000) ---
-dev.tty.ldisc_autoload = 0
-kernel.core_uses_pid = 1
-kernel.ctrl-alt-del = 0
-EOF
+  local kv
+  {
+    echo "# Written by harden.sh $HARDEN_VERSION. Undo: sudo harden --undo"
+    for kv in "${SYSCTL_SETTINGS[@]}" "${SYSCTL_PERFORMANCE[@]}"; do echo "${kv%%=*} = ${kv#*=}"; done
+  } >"$SYSCTL_CONF"
   # Debian and Ubuntu ship /usr/lib/sysctl.d/99-protect-links.conf. It sorts after our
-  # file ("h" < "p") and puts fs.protected_fifos back to 1 — a Lynis run on a live server
-  # showed it. A file of the same name in /etc replaces the packaged one.
-  cat >/etc/sysctl.d/99-protect-links.conf <<'EOF'
-# Written by harden.sh. Replaces /usr/lib/sysctl.d/99-protect-links.conf, which loads
-# after 99-hardening.conf and would lower fs.protected_fifos to 1.
-fs.protected_fifos = 2
-fs.protected_hardlinks = 1
-fs.protected_regular = 2
-fs.protected_symlinks = 1
-EOF
+  # file ("h" < "p") and puts fs.protected_fifos back to 1. A file of the same name in
+  # /etc replaces the packaged one.
+  {
+    echo "# Written by harden.sh. Replaces /usr/lib/sysctl.d/99-protect-links.conf, which loads"
+    echo "# after 99-hardening.conf and would lower fs.protected_fifos to 1."
+    for kv in "${SYSCTL_SETTINGS[@]}"; do
+      [[ $kv == fs.protected_* ]] && echo "${kv%%=*} = ${kv#*=}"
+    done
+  } >/etc/sysctl.d/99-protect-links.conf
 }
 
-# Keys from our file whose live value is different: something that loads later has set
-# them again. It has happened three times — UFW with ping, apport with suid_dumpable,
-# procps with protected_fifos — so it is checked for every key, not guessed at.
+# Settings whose live value is not the one in the list: something that loads later has
+# set them again (it has happened with UFW, apport and procps), or the setup never ran.
+# A key this kernel does not have is skipped.
 sysctl_overridden() {
-  local k v cur out=""
-  [[ -r $SYSCTL_CONF ]] || return 0
-  while IFS=$' \t=' read -r k v; do
-    [[ -z $k || $k == \#* ]] && continue
-    case $k in net.core.default_qdisc|net.ipv4.tcp_congestion_control) continue ;; esac  # speed, not security
-    cur=$(sysctl -n "$k" 2>/dev/null) || continue   # this kernel has no such key
-    [[ $cur == "$v" ]] || out+="$k "
-  done <"$SYSCTL_CONF"
+  local kv cur out=""
+  for kv in "${SYSCTL_SETTINGS[@]}"; do
+    cur=$(sysctl -n "${kv%%=*}" 2>/dev/null) || continue
+    [[ $cur == "${kv#*=}" ]] || out+="${kv%%=*} "
+  done
   printf '%s' "$out"
 }
 
@@ -1394,6 +1392,13 @@ EOF
 }
 
 # ---------- 6. SSH ----------
+# How the switch works, and why it is built this way: docs/decisions/0001-ssh-port-switch.md
+#
+#   1. A second sshd, started for the test alone, answers on the new port with the new
+#      settings. The running sshd — old port, old rules — is not touched at all.
+#   2. Only after the admin has logged in through it does the running sshd take the new
+#      settings. A way back is armed first: a timer that restores SSH unless the admin
+#      confirms a new login in time, whatever happens to this script or the session.
 filter_algos() {  # filter_algos <ssh -Q type> algorithms... -> the supported ones, comma-separated
   local type=$1; shift
   local supported out=() a
@@ -1404,46 +1409,19 @@ filter_algos() {  # filter_algos <ssh -Q type> algorithms... -> the supported on
 
 ssh_service() { systemctl list-unit-files ssh.service &>/dev/null && echo ssh || echo sshd; }
 
-# The lines of our own SSH file that decide who gets in, as the last finished run left
-# them. Empty on a server that has not been set up, or whose setup stopped half-way.
-ssh_access_in_force() {
-  [[ -f $SSHD_DROPIN ]] || return 0
-  awk '$1=="Match"{exit}
-       /^(PermitRootLogin|AllowUsers|AuthenticationMethods|PasswordAuthentication|KbdInteractiveAuthentication)[[:space:]]/' \
-    "$SSHD_DROPIN" 2>/dev/null || true
-}
+# Who gets in, and how. The one list: written into our drop-in, compared with what sshd
+# really uses after the switch, and by --check.
+SSH_AUTH_POLICY=(
+  "PermitRootLogin no"
+  "PasswordAuthentication no"
+  "KbdInteractiveAuthentication no"
+  "PermitEmptyPasswords no"
+  "AuthenticationMethods publickey"
+)
 
-# write_sshd_config "port1 port2 ..." [new-port [rules-in-force]]
-# With a second argument the rules that decide who gets in — no root, keys only, the named
-# users — are written for that port alone (a Match block), and every other port keeps the
-# rules it had. That is the first stage of the switch: until the admin has logged in on the
-# new port, the old one is not just open, it still lets them in the old way. Before, both
-# ports got the new rules at once, and if the new key turned out not to work and the
-# session dropped, the only way back was the provider's console.
-#
-# The third argument is what ssh_access_in_force found: on a server this script has set up
-# before, "the rules the old port had" are the ones in our own file, not the provider's
-# sshd_config underneath it. Written without them, a second run with another port let
-# passwords in on the old port again for as long as the question stood on the screen. And
-# where the new port is the one sshd is on already, there is no other port to keep the old
-# way in on — so the accounts that could log in stay allowed until the login is confirmed.
+# write_sshd_config "port..." [file] — our drop-in, $SSHD_DROPIN unless a file is named
 write_sshd_config() {
-  local ports=$1 only_on=${2:-} keep=${3:-} p kex ciphers macs hostkeys access allow
-  local -a had_users=()
-  allow="$NEW_USER${SSH_EXTRA_USERS:+ $SSH_EXTRA_USERS}"
-  if [[ -n $only_on && -n $keep && " ${CURRENT_SSH_PORTS:-} " == *" $only_on "* ]]; then
-    # read into an array, not split from $(...): a pattern someone has put into AllowUsers
-    # by hand must not be expanded against the files of the current directory
-    mapfile -t had_users < <(awk '$1=="AllowUsers"{for (i = 2; i <= NF; i++) print $i}' <<<"$keep")
-    for p in "${had_users[@]}"; do
-      [[ " $allow " == *" $p "* ]] || allow+=" $p"
-    done
-  fi
-  access="PermitRootLogin no
-AllowUsers $allow
-AuthenticationMethods publickey
-PasswordAuthentication no
-KbdInteractiveAuthentication no"
+  local ports=$1 out=${2:-$SSHD_DROPIN} p kex ciphers macs hostkeys
   kex=$(filter_algos kex mlkem768x25519-sha256 sntrup761x25519-sha512 sntrup761x25519-sha512@openssh.com \
         curve25519-sha256 curve25519-sha256@libssh.org diffie-hellman-group18-sha512 diffie-hellman-group16-sha512)
   ciphers=$(filter_algos cipher chacha20-poly1305@openssh.com aes256-gcm@openssh.com aes128-gcm@openssh.com aes256-ctr aes128-ctr)
@@ -1461,15 +1439,10 @@ HostKey /etc/ssh/ssh_host_rsa_key
 
 # --- Authentication: keys only, no root ---
 EOF
-    if [[ -z $only_on ]]; then
-      echo "$access"
-    elif [[ -n $keep ]]; then
-      echo "# as the previous run left them: in force on the old port until the new one is confirmed"
-      echo "$keep"
-    fi
+    printf '%s\n' "${SSH_AUTH_POLICY[@]}"
+    echo "AllowUsers $NEW_USER${SSH_EXTRA_USERS:+ $SSH_EXTRA_USERS}"
     cat <<EOF
 PubkeyAuthentication yes
-PermitEmptyPasswords no
 HostbasedAuthentication no
 IgnoreRhosts yes
 UsePAM yes
@@ -1507,106 +1480,45 @@ EOF
     [[ -n $ciphers ]]  && echo "Ciphers $ciphers"
     [[ -n $macs ]]     && echo "MACs $macs"
     [[ -n $hostkeys ]] && echo "HostKeyAlgorithms $hostkeys"
-    if [[ -n $only_on ]]; then
-      echo
-      echo "# --- Until the login on port $only_on is confirmed, who gets in is decided for that"
-      echo "#     port only. A Match block has to come last: it runs to the end of the file. ---"
-      echo "Match LocalPort $only_on"
-      sed 's/^/    /' <<<"$access"
-    fi
     true
-  } >"$SSHD_DROPIN"
-  chmod 600 "$SSHD_DROPIN"
+  } >"$out"
+  chmod 600 "$out"
 }
 
-# The pids of the sshd processes listening on a port, read from the kernel's socket table.
-# What systemd says about the unit is deliberately not asked — see restart_sshd.
-sshd_listener_pids() {  # sshd_listener_pids port
-  # || true: finding nothing is a normal answer, not an error for the ERR trap to report
-  ss -Hltnp "sport = :$1" 2>/dev/null | grep -oE '"sshd",pid=[0-9]+' | grep -oE '[0-9]+$' | sort -u || true
+# Ubuntu 22.10 and later start sshd through ssh.socket. Its ports are taken from
+# sshd_config by sshd-socket-generator at every daemon-reload, so on such a system a new
+# port is a daemon-reload and a fresh start of the socket — the way Ubuntu documents it.
+# Turning socket activation off instead, under a running daemon, is what once left systemd
+# with a unit it read as stopped and a daemon still on the old port (ADR 0001).
+ssh_socket_mode() {
+  systemctl is-enabled --quiet ssh.socket 2>/dev/null || systemctl is-active --quiet ssh.socket 2>/dev/null
+}
+ssh_socket_generator() {
+  [[ -x /usr/lib/systemd/system-generators/sshd-socket-generator || -x /lib/systemd/system-generators/sshd-socket-generator ]]
 }
 
-# systemd can be left believing that a unit it reads as inactive still has a main process.
-# Seen on a live server, and in CI after `systemctl enable ssh.service` had added the alias
-# sshd.service to a running, socket-activated unit — in some runs and not in others, with
-# the same commands. Two things follow from that state:
-#   - `systemctl stop` does nothing for such a unit, so its listener keeps the port;
-#   - that listener must not be signalled as it is. systemd's handler for the exit of a
-#     main process has no case for a unit that is not running, and PID 1 freezes: every
-#     systemctl call then times out. CI ran into exactly that, before a server did.
-# A start makes systemd take a new main process and file the old one as a left-over — the
-# journal of the live run shows it doing so. The stop then ends the new one, and the old
-# one can be stopped like any other leftover.
-forget_stale_main_pid() {
-  local svc main
+# The commands that make the running sshd take the configuration on disk. Printed rather
+# than run, because the timed way back (write_ssh_rollback) needs the very same ones.
+ssh_apply_script() {
+  local svc
   svc=$(ssh_service)
-  systemctl is-active --quiet "$svc" && return 0
-  main=$(systemctl show -p MainPID --value "$svc" 2>/dev/null || true)
-  [[ -n $main && $main != 0 ]] || return 0
-  info "$(T "systemd считает $svc остановленной, хотя её процесс $main работает — привожу учёт в порядок" \
-            "systemd reads $svc as stopped while its process $main is running — setting its books straight")"
-  systemctl reset-failed "$svc" &>/dev/null || true
-  systemctl start "$svc" &>/dev/null || true
-  systemctl stop "$svc" &>/dev/null || true
+  if ssh_socket_mode; then
+    # The socket is stopped first, so nothing can start the service on the old sockets in
+    # between. Sessions stay: Debian and Ubuntu stop ssh.service with KillMode=process.
+    printf 'systemctl daemon-reload\nsystemctl stop ssh.socket %s.service\nsystemctl start ssh.socket\n' "$svc"
+  else
+    # A reload re-executes the listener on the new settings; sessions are not touched
+    printf 'systemctl reload-or-restart %s.service\n' "$svc"
+  fi
 }
 
-# Stop every sshd daemon still bound to the given ports. Called after the unit has been
-# stopped and forget_stale_main_pid has run, when nothing of sshd's may listen there.
-#
-# The process systemd names as the unit's MainPID is never signalled here. Until 2026.10.17
-# that was meant as "the unit's own daemon is not a leftover", and on a live server it
-# spared the one daemon that had to go: the unit was inactive, its old listener still ran
-# and was still named as MainPID, it kept port 22, and the new daemon could not bind it —
-# versions 2026.10.8 to 2026.10.17 rolled back at this step on such an image. The check
-# stays for the opposite reason: signalling that process is what freezes PID 1 (above).
-# forget_stale_main_pid is what gets a stale one out of systemd's books first.
-#
-# Sessions are untouched: they are separate processes and hold no listening socket on
-# these ports (their X11 listeners on 127.0.0.1:60xx are not SSH ports and are not asked for).
-kill_sshd_listeners_on() {  # kill_sshd_listeners_on port...
-  local p pid main exe bin
-  main=$(systemctl show -p MainPID --value "$(ssh_service)" 2>/dev/null || true)
-  bin=$(readlink -f "$(command -v sshd)" 2>/dev/null || true)
-  for p in "$@"; do
-    for pid in $(sshd_listener_pids "$p"); do
-      [[ $pid == "${main:-0}" ]] && continue
-      # A process that is merely called sshd is not ours to stop: it has to run the
-      # system's sshd binary. " (deleted)" is how the kernel marks a daemon that outlived
-      # a package upgrade — a likely leftover, so it still counts.
-      exe=$(readlink "/proc/$pid/exe" 2>/dev/null || true)
-      [[ -n $bin && ${exe% (deleted)} == "$bin" ]] || continue
-      kill "$pid" 2>/dev/null \
-        && info "$(T "Остановлен оставшийся sshd (pid $pid) на порту $p" "Stopped a leftover sshd (pid $pid) on port $p")"
-    done
-  done
-  return 0
+ssh_apply() {
+  sshd -t || return 1
+  if ssh_socket_mode; then ensure_ssh_killmode; fi
+  bash -e -c "$(ssh_apply_script)"
 }
 
-# One sshd — the same one — on every port asked for. A second pid anywhere is a leftover.
-sshd_bound_to_all() {  # sshd_bound_to_all port...
-  local p pids first=""
-  for p in "$@"; do
-    pids=$(sshd_listener_pids "$p")
-    [[ -n $pids && $pids != *$'\n'* ]] || return 1
-    [[ -n $first ]] || first=$pids
-    [[ $pids == "$first" ]] || return 1
-  done
-  return 0
-}
-
-# Who holds each port, and what systemd thinks — printed when a restart does not end the
-# way it should, so the reason is on the screen and not only in the journal.
-sshd_port_report() {  # sshd_port_report port...
-  local p svc
-  svc=$(ssh_service)
-  for p in "$@"; do
-    echo "    port $p: $(ss -Hltnp "sport = :$p" 2>/dev/null | grep -oE 'users:\(.*\)' | sort -u | paste -sd' ' - || true)"
-  done
-  echo "    $svc.service: $(systemctl is-active "$svc" 2>/dev/null || true), MainPID $(systemctl show -p MainPID --value "$svc" 2>/dev/null || true); ssh.socket: $(systemctl is-active ssh.socket 2>/dev/null || true)"
-  journalctl -u "$svc" -n 60 --no-pager -o cat 2>/dev/null | grep -E 'error|fatal|Bind to port|listening on' | tail -6 | sed 's/^/    /' || true
-}
-
-# Stopping the unit must not take the admin's session with it. Debian and Ubuntu ship
+# Stopping the service must not take the admin's session with it. Debian and Ubuntu ship
 # ssh.service with KillMode=process, which stops the listener and nothing else. That is
 # checked rather than assumed: if this unit says otherwise, a drop-in in /run says it for
 # now ("zz-" so it is read last) and is gone at the next boot.
@@ -1623,60 +1535,121 @@ ensure_ssh_killmode() {
   return 0
 }
 
-# A clean start rather than `systemctl restart`: stop the socket and the service, clear
-# whatever daemon is left on the ports, then start. ensure_ssh_killmode sees to it that
-# the admin's own session survives the stop.
-#
-# Ubuntu 22.10+ starts sshd through ssh.socket, which ignores Port, so the first call also
-# turns socket activation off and the plain service on — after sshd has been stopped, not
-# before. Switching the units under a running daemon is what left systemd with a unit it
-# read as inactive and a listener it no longer stopped (forget_stale_main_pid has the
-# story). Stopped first, the unit has nothing left for systemd to lose track of. If that
-# state is there already, from before this script, it is put right before anything is
-# signalled; and success is read from the socket table, not from systemd.
-restart_sshd() {  # restart_sshd port... — the ports the new daemon must end up bound to
-  local svc
-  svc=$(ssh_service)
-  sshd -t || return 1
-  ensure_ssh_killmode
-  systemctl stop ssh.socket &>/dev/null || true
-  systemctl stop "$svc" &>/dev/null || true
-  if systemctl is-enabled ssh.socket &>/dev/null; then
-    info "$(T "Отключаю ssh.socket (socket activation), включаю ssh.service" "Disabling ssh.socket (socket activation), enabling ssh.service")"
-    systemctl disable ssh.socket &>/dev/null || true
-    systemctl enable ssh.service &>/dev/null || true
-  fi
-  forget_stale_main_pid
-  # shellcheck disable=SC2086  # CURRENT_SSH_PORTS is a space-separated list
-  kill_sshd_listeners_on "$@" $CURRENT_SSH_PORTS
-  for _ in 1 2 3 4 5 6 7 8 9 10; do   # give the kernel a moment to release the ports
-    ss -Hltn 2>/dev/null | grep -qE ":($(tr ' ' '|' <<<"$*"))[[:space:]]" || break
+# Asked of the kernel, not of systemd: is sshd (or systemd, holding the socket for it)
+# listening on each of these ports? Another program on the port does not count — sshd
+# carries on when it cannot bind one of several ports, and that has to show.
+sshd_listening() {  # sshd_listening port...
+  local p
+  for p in "$@"; do
+    ss -Hltnp "sport = :$p" 2>/dev/null | grep -qE '"(sshd|systemd)"' || return 1
+  done
+}
+wait_sshd_listening() {
+  local _
+  for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+    sshd_listening "$@" && return 0
     sleep 0.5
   done
-  # A unit that failed or was restarted a few times in a row (a setup run again after a
-  # rollback) may be refused by systemd's start limit
-  systemctl reset-failed "$svc" &>/dev/null || true
-  if ! systemctl start "$svc"; then
-    sshd_port_report "$@"
-    return 1
-  fi
-  # "Started" is not enough: sshd carries on when it cannot bind one of several ports,
-  # which is exactly how a leftover daemon went unnoticed. Asked of the kernel, not of
-  # systemd: one sshd, the same one, on every port.
-  for _ in 1 2 3 4 5 6 7 8 9 10; do
-    if systemctl is-active --quiet "$svc" && sshd_bound_to_all "$@"; then return 0; fi
-    sleep 0.5
-  done
-  warn "$(T "sshd запущен, но слушает не все порты из: $*" "sshd started but is not bound to all of: $*")"
-  sshd_port_report "$@"
   return 1
+}
+# Of these ports, the ones sshd still listens on (an old port should be free by now)
+sshd_still_on() {
+  local p left=""
+  for p in "$@"; do sshd_listening "$p" && left+="$p "; done
+  printf '%s' "${left% }"
+}
+
+# Who holds each port, and what systemd thinks — printed when a switch does not end the
+# way it should, so the reason is on the screen and not only in the journal.
+sshd_port_report() {  # sshd_port_report port...
+  local p svc
+  svc=$(ssh_service)
+  for p in "$@"; do
+    echo "    port $p: $(ss -Hltnp "sport = :$p" 2>/dev/null | grep -oE 'users:\(.*\)' | sort -u | paste -sd' ' - || true)"
+  done
+  echo "    $svc.service: $(systemctl is-active "$svc" 2>/dev/null || true); ssh.socket: $(systemctl is-active ssh.socket 2>/dev/null || true)"
+  journalctl -u "$svc" -u "$SSHD_TEST_UNIT" -n 60 --no-pager -o cat 2>/dev/null \
+    | grep -E 'error|fatal|Bind to port|listening on' | tail -6 | sed 's/^/    /' || true
+}
+
+# ---- stage 1: a second sshd for the test ----
+SSHD_TEST_UNIT=harden-sshd-test
+SSHD_TEST_DIR=/run/harden/sshd-test
+
+# The configuration the server is about to get, as a whole: the provider's sshd_config and
+# its other drop-ins take part as they will afterwards. Our own file from an earlier run
+# does not — the new one takes its place.
+write_test_sshd_config() {
+  local f
+  rm -rf "$SSHD_TEST_DIR"
+  install -d -m 700 "$SSHD_TEST_DIR/conf.d"
+  write_sshd_config "$SSH_PORT" "$SSHD_TEST_DIR/conf.d/${SSHD_DROPIN##*/}"
+  for f in /etc/ssh/sshd_config.d/*.conf; do
+    [[ -f $f && $f != "$SSHD_DROPIN" ]] && ln -s "$f" "$SSHD_TEST_DIR/conf.d/"
+  done
+  sed -E "s#^([[:space:]]*Include[[:space:]]+)/etc/ssh/sshd_config\\.d/\\*\\.conf#\\1$SSHD_TEST_DIR/conf.d/*.conf#" \
+    /etc/ssh/sshd_config >"$SSHD_TEST_DIR/sshd_config"
+  chmod 600 "$SSHD_TEST_DIR/sshd_config"
+}
+
+# KillMode=process: stopping the test sshd must not close the window the admin tested
+# from, which they may well go on using.
+start_test_sshd() {
+  write_test_sshd_config
+  sshd -t -f "$SSHD_TEST_DIR/sshd_config" -p "$SSH_PORT" || return 1
+  stop_test_sshd
+  systemd-run --quiet --unit="$SSHD_TEST_UNIT" --collect -p KillMode=process \
+    "$(command -v sshd)" -D -e -f "$SSHD_TEST_DIR/sshd_config" -p "$SSH_PORT" -o "PidFile=$SSHD_TEST_DIR/sshd.pid" || return 1
+  wait_sshd_listening "$SSH_PORT"
+}
+
+stop_test_sshd() {
+  systemctl stop "$SSHD_TEST_UNIT" &>/dev/null || true
+  systemctl reset-failed "$SSHD_TEST_UNIT" &>/dev/null || true
+}
+
+# ---- stage 2: the way back, armed before the running sshd changes ----
+SSH_ROLLBACK=/run/harden/ssh-rollback.sh
+SSH_ROLLBACK_UNIT=harden-ssh-rollback
+SSH_CONFIRM_SECONDS=${HARDEN_SSH_CONFIRM_SECONDS:-600}
+
+# A script of its own, so the way back does not depend on this one still running: it is
+# run at once on "no", and by a timer when no answer comes in time — the session dropped,
+# the script was killed, or the new settings let nobody in to answer. It lives in /run:
+# after a reboot there is no timer either, and the settings confirmed at stage 1 stay.
+write_ssh_rollback() {
+  install -d -m 700 /run/harden
+  {
+    echo '#!/bin/bash'
+    echo "# Written by harden.sh $HARDEN_VERSION: puts SSH back the way it was before this run."
+    echo "systemctl stop $SSHD_TEST_UNIT 2>/dev/null"
+    echo "rm -f $(printf '%q' "$SSHD_DROPIN")"
+    echo "cp -a $(printf '%q' "$BACKUP_DIR/ssh/.") /etc/ssh/"
+    ssh_apply_script
+    echo "echo 'harden.sh: SSH is back to how it was before the setup' | systemd-cat -t harden -p warning"
+  } >"$SSH_ROLLBACK"
+  chmod 700 "$SSH_ROLLBACK"
+}
+
+arm_ssh_rollback() {  # arm_ssh_rollback seconds
+  disarm_ssh_rollback
+  systemd-run --quiet --unit="$SSH_ROLLBACK_UNIT" --on-active="$1" /bin/bash "$SSH_ROLLBACK"
+}
+disarm_ssh_rollback() {
+  systemctl stop "$SSH_ROLLBACK_UNIT.timer" "$SSH_ROLLBACK_UNIT.service" &>/dev/null || true
+  systemctl reset-failed "$SSH_ROLLBACK_UNIT.timer" "$SSH_ROLLBACK_UNIT.service" &>/dev/null || true
+}
+ssh_rollback_pending() { systemctl is-active --quiet "$SSH_ROLLBACK_UNIT.timer"; }
+ssh_rollback_now() {
+  disarm_ssh_rollback
+  warn "$(T "Возвращаю SSH к прежнему состоянию..." "Putting SSH back the way it was...")"
+  bash "$SSH_ROLLBACK" || true
 }
 
 # The upgrade keeps a provider-edited sshd_config and saves the packaged one beside it
-# for review; --check then shows a "!" after every clean setup on such an image (three
-# live runs in a row did). SSH settings are decided by our drop-in, which is read first
-# and has just been compared with what sshd really uses, so that copy has nothing left to
-# say. It is moved to the backup, not deleted.
+# for review; --check would show a "!" for it after every clean setup on such an image.
+# Our drop-in decides the SSH settings and has just been compared with what sshd really
+# uses, so that copy has nothing left to say. It is moved to the backup, not deleted.
 stash_sshd_config_dist() {
   local f
   for f in /etc/ssh/sshd_config.ucf-dist /etc/ssh/sshd_config.dpkg-dist /etc/ssh/sshd_config.dpkg-new; do
@@ -1691,33 +1664,64 @@ stash_sshd_config_dist() {
 # What sshd will really do for a login on the new port, not what our file says: a line
 # earlier in sshd_config, or a drop-in that sorts before ours, wins ("first match wins").
 # -C makes sshd -T apply Match blocks as it would for such a connection.
-ssh_settings_not_in_effect() {
+ssh_settings_not_in_effect() {  # ssh_settings_not_in_effect [sshd_config]
   local eff kv bad=""
-  eff=$(sshd -T -C "user=$NEW_USER,host=localhost,addr=127.0.0.1,lport=$SSH_PORT" 2>/dev/null || true)
-  for kv in 'passwordauthentication no' 'permitrootlogin no' 'kbdinteractiveauthentication no' 'authenticationmethods publickey'; do
-    grep -qx "$kv" <<<"$eff" || bad+="[$kv] "
+  eff=$(sshd -T -f "${1:-/etc/ssh/sshd_config}" -C "user=$NEW_USER,host=localhost,addr=127.0.0.1,lport=$SSH_PORT" 2>/dev/null || true)
+  for kv in "${SSH_AUTH_POLICY[@]}"; do
+    grep -qxi "$kv" <<<"$eff" || bad+="[$kv] "
   done
   printf '%s' "$bad"
 }
 
-rollback_ssh() {
-  warn "$(T "Откат настроек SSH..." "Rolling SSH back...")"
-  rm -f "$SSHD_DROPIN"
-  if [[ -d $BACKUP_DIR/ssh ]]; then cp -a "$BACKUP_DIR/ssh/." /etc/ssh/ || true; fi
-  # shellcheck disable=SC2086
-  restart_sshd $CURRENT_SSH_PORTS || systemctl restart "$(ssh_service)" || true
+warn_settings_not_in_effect() {  # warn_settings_not_in_effect [sshd_config]
+  local bad
+  bad=$(ssh_settings_not_in_effect "$@")
+  [[ -z $bad ]] || warn "$(T "Эти настройки SSH не действуют — их перекрывает что-то выше в /etc/ssh/sshd_config или в sshd_config.d:" \
+                            "These SSH settings are not in effect — something earlier in /etc/ssh/sshd_config or in sshd_config.d overrides them:") $bad"
+}
+
+login_hint() {  # login_hint ip
+  echo
+  warn_box "$(T "НЕ ЗАКРЫВАЙ ЭТО ОКНО! Открой НОВЫЙ терминал и проверь:" \
+                "DO NOT CLOSE THIS WINDOW! Open a NEW terminal and check:")"
+  echo
+  echo "     ssh -p $SSH_PORT $NEW_USER@$1"
+  if [[ $USER_HAS_PASSWORD == yes ]]; then
+    echo "     sudo -v        # $(T "проверить, что sudo работает (введи пароль)" "check that sudo works (enter the password)")"
+  fi
+  echo
+  T "  Не пускает (timeout)? У облачных хостеров есть свой firewall в панели" \
+    "  Timing out? Cloud providers have their own firewall in the control panel"; echo
+  T "  (AWS Security Group, Hetzner/Oracle/GCP Firewall) — открой там TCP $SSH_PORT и проверь снова." \
+    "  (AWS Security Group, Hetzner/Oracle/GCP Firewall) — open TCP $SSH_PORT there and try again."; echo
+  echo
+}
+
+# confirm_login "question" — 0 once the admin says yes; 1 after three noes, or when they
+# give up trying
+confirm_login() {
+  local tries=0
+  until ask_yn "$1" n; do
+    tries=$((tries + 1))
+    if (( tries >= 3 )) || ! ask_yn "$(T "Попробовать ещё раз?" "Try again?")" y; then return 1; fi
+  done
 }
 
 setup_ssh() {
   step "SSH"
   mkdir -p /etc/ssh/sshd_config.d /run/sshd
+  if ssh_socket_mode && ! ssh_socket_generator; then
+    # Without the generator the socket would not learn the new port, and the new
+    # settings would be confirmed on a port nothing listens on
+    die "$(T "sshd запускается через ssh.socket, но sshd-socket-generator не найден — порт так не сменить. Переключи SSH на обычную службу (systemctl disable --now ssh.socket && systemctl enable --now ssh.service) и запусти снова." \
+             "sshd is started through ssh.socket, but sshd-socket-generator is missing — the port cannot be changed that way. Switch SSH to the plain service (systemctl disable --now ssh.socket && systemctl enable --now ssh.service) and run again.")"
+  fi
   grep -qE '^\s*Include\s+/etc/ssh/sshd_config\.d/\*\.conf' /etc/ssh/sshd_config \
     || sed -i '1i Include /etc/ssh/sshd_config.d/*.conf' /etc/ssh/sshd_config
 
   # Host keys. DSA and ECDSA key files are left where they are: the HostKey and
-  # HostKeyAlgorithms lines below decide what sshd offers, and deleting the files added
-  # nothing but a change that is harder to undo. An RSA key below 3072 bits is replaced —
-  # that one would be offered — and the old one stays in the backup.
+  # HostKeyAlgorithms lines decide what sshd offers. An RSA key below 3072 bits is
+  # replaced — that one would be offered — and the old one stays in the backup.
   [[ -f /etc/ssh/ssh_host_ed25519_key ]] || ssh-keygen -q -t ed25519 -N "" -f /etc/ssh/ssh_host_ed25519_key
   if [[ ! -f /etc/ssh/ssh_host_rsa_key ]]; then
     ssh-keygen -q -t rsa -b 4096 -N "" -f /etc/ssh/ssh_host_rsa_key
@@ -1732,64 +1736,65 @@ setup_ssh() {
     rm -f /etc/ssh/moduli.safe   # left behind, empty, when no group was large enough
   fi
 
-  # Ubuntu 22.10+ runs sshd through ssh.socket, which ignores Port. The switch to the
-  # plain service is made inside restart_sshd, after sshd has been stopped — see there.
-
-  # Stage 1: old and new port side by side — the new rules on the new port only
-  local ports="$CURRENT_SSH_PORTS" had
-  had=$(ssh_access_in_force)
-  [[ " $ports " == *" $SSH_PORT "* ]] || ports="$ports $SSH_PORT"
-  write_sshd_config "$ports" "$SSH_PORT" "$had"
-  if ! sshd -t; then rollback_ssh; die "$(T "Конфиг sshd не прошёл проверку — откатил." "sshd config failed the check — rolled back.")"; fi
-  # shellcheck disable=SC2086
-  restart_sshd $ports || { rollback_ssh; die "$(T "sshd не перезапустился — откатил." "sshd did not restart — rolled back.")"; }
-  if [[ $ports == "$SSH_PORT" ]]; then
-    ok "$(T "sshd слушает порт" "sshd listens on port") $SSH_PORT"
-  else
-    # Said in so many words. Read back from the log, a bare "ports: 22 21576" looked as
-    # if the old port had been left open for good.
-    ok "$(T "sshd ВРЕМЕННО слушает и старый, и новый порт: $ports. На старом пока действуют прежние правила входа; он закроется, как только ты подтвердишь вход на новый" \
-            "sshd TEMPORARILY listens on the old and the new port: $ports. The old one still lets you in the old way; it closes as soon as you confirm the login on the new one")"
-  fi
-
-  local bad
-  bad=$(ssh_settings_not_in_effect)
-  [[ -z $bad ]] || warn "$(T "Эти настройки SSH не действуют — их перекрывает что-то выше в /etc/ssh/sshd_config или в sshd_config.d:" \
-                            "These SSH settings are not in effect — something earlier in /etc/ssh/sshd_config or in sshd_config.d overrides them:") $bad"
-
-  # The admin proves the new login works before anything is closed
   local ip
   ip=$(curl -fsS4 --max-time 5 https://ifconfig.me 2>/dev/null || hostname -I | awk '{print $1}')
-  echo
-  warn_box "$(T "НЕ ЗАКРЫВАЙ ЭТО ОКНО! Открой НОВЫЙ терминал и проверь:" \
-                "DO NOT CLOSE THIS WINDOW! Open a NEW terminal and check:")"
-  echo
-  echo "     ssh -p $SSH_PORT $NEW_USER@$ip"
-  if [[ $USER_HAS_PASSWORD == yes ]]; then
-    echo "     sudo -v        # $(T "проверить, что sudo работает (введи пароль)" "check that sudo works (enter the password)")"
-  fi
-  echo
-  T "  Не пускает (timeout)? У облачных хостеров есть свой firewall в панели" \
-    "  Timing out? Cloud providers have their own firewall in the control panel"; echo
-  T "  (AWS Security Group, Hetzner/Oracle/GCP Firewall) — открой там TCP $SSH_PORT и проверь снова." \
-    "  (AWS Security Group, Hetzner/Oracle/GCP Firewall) — open TCP $SSH_PORT there and try again."; echo
-  echo
-  local tries=0
-  until ask_yn "$(T "Вход по ключу на порт $SSH_PORT работает?" "Does key login on port $SSH_PORT work?")" n; do
-    tries=$((tries+1))
-    if (( tries >= 3 )) || ! ask_yn "$(T "Попробовать ещё раз? (нет = откатить SSH)" "Try again? (no = roll SSH back)")" y; then
-      rollback_ssh
-      die "$(T "SSH откатан к исходному состоянию. Firewall пропускает оба порта. Проверь ключ и запусти снова." \
-               "SSH rolled back to how it was. The firewall allows both ports. Check the key and run again.")"
-    fi
-  done
 
-  # Stage 2: new port only
+  # Stage 1: the new port on a second sshd. On a re-run with the port sshd is on already
+  # there is no second port to try it on, and stage 2 with its timed way back is the test.
+  if [[ " $CURRENT_SSH_PORTS " != *" $SSH_PORT "* ]]; then
+    if ! start_test_sshd; then
+      sshd_port_report "$SSH_PORT"
+      stop_test_sshd
+      die "$(T "Проверочный sshd на порту $SSH_PORT не запустился. Работающий SSH не менялся." \
+               "The test sshd on port $SSH_PORT did not start. The running SSH has not been changed.")"
+    fi
+    warn_settings_not_in_effect "$SSHD_TEST_DIR/sshd_config"
+    ok "$(T "На порту $SSH_PORT отвечает проверочный sshd с новыми настройками. Работающий SSH (порт $CURRENT_SSH_PORTS, прежние правила входа) не тронут." \
+            "A test sshd answers on port $SSH_PORT with the new settings. The running SSH (port $CURRENT_SSH_PORTS, the old login rules) is untouched.")"
+    login_hint "$ip"
+    if ! confirm_login "$(T "Вход по ключу на порт $SSH_PORT работает?" "Does key login on port $SSH_PORT work?")"; then
+      stop_test_sshd
+      die "$(T "SSH не менялся: проверочный sshd остановлен, вход остался прежним. Проверь ключ и запусти снова." \
+               "SSH is unchanged: the test sshd is stopped, logins work as before. Check the key and run again.")"
+    fi
+  fi
+
+  # Stage 2: the running sshd takes the new settings, with the way back armed first
+  local until_time p left
+  local -a old_ports=()
+  for p in $CURRENT_SSH_PORTS; do [[ $p == "$SSH_PORT" ]] || old_ports+=("$p"); done
+  write_ssh_rollback
+  arm_ssh_rollback "$SSH_CONFIRM_SECONDS"
+  until_time=$(date -d "+$SSH_CONFIRM_SECONDS sec" +%H:%M)
   write_sshd_config "$SSH_PORT"
-  restart_sshd "$SSH_PORT" || { rollback_ssh; die "$(T "Ошибка при финальном перезапуске sshd — откатил." "Final sshd restart failed — rolled back.")"; }
-  local p closed=""
-  for p in $CURRENT_SSH_PORTS; do
-    [[ $p == "$SSH_PORT" ]] && continue
+  stop_test_sshd
+  if ! ssh_apply || ! wait_sshd_listening "$SSH_PORT"; then
+    sshd_port_report "$SSH_PORT" "${old_ports[@]}"
+    ssh_rollback_now
+    die "$(T "sshd не поднялся на порту $SSH_PORT — SSH возвращён к прежнему состоянию." \
+             "sshd did not come up on port $SSH_PORT — SSH is back to how it was.")"
+  fi
+  left=$(sshd_still_on "${old_ports[@]}")
+  if [[ -n $left ]]; then
+    warn "$(T "На старом порту всё ещё слушает sshd:" "sshd still listens on the old port:") $left"
+    sshd_port_report "${old_ports[@]}"
+  fi
+  warn_settings_not_in_effect
+  ok "$(T "SSH работает на порту $SSH_PORT с новыми настройками. Если вход не подтвердить до $until_time, SSH сам вернётся к прежнему состоянию." \
+          "SSH runs on port $SSH_PORT with the new settings. Unless a login is confirmed by $until_time, SSH goes back to how it was by itself.")"
+  [[ " $CURRENT_SSH_PORTS " != *" $SSH_PORT "* ]] || login_hint "$ip"
+  if ! confirm_login "$(T "Новый вход на порт $SSH_PORT по-прежнему работает (новое окно)?" "Does a new login on port $SSH_PORT still work (from a new window)?")"; then
+    ssh_rollback_now
+    die "$(T "SSH возвращён к прежнему состоянию. Firewall пропускает оба порта. Проверь ключ и запусти снова." \
+             "SSH is back to how it was. The firewall allows both ports. Check the key and run again.")"
+  fi
+  # A "yes" that came after the timer had already put SSH back is not a confirmation
+  ssh_rollback_pending || die "$(T "Время на подтверждение вышло, и SSH уже вернулся к прежнему состоянию. Запусти настройку снова." \
+                                  "The time to confirm ran out and SSH has already gone back to how it was. Run the setup again.")"
+  disarm_ssh_rollback
+
+  local closed=""
+  for p in "${old_ports[@]}"; do
     closed+="$p "
     # every form the old port may have been opened in, not only the one this script uses
     ufw delete allow "$p/tcp" >/dev/null 2>&1 || true
@@ -1800,9 +1805,6 @@ setup_ssh() {
   ufw delete limit OpenSSH >/dev/null 2>&1 || true
   ok "$(T "SSH только на порту $SSH_PORT, только по ключу, root запрещён" "SSH on port $SSH_PORT only, keys only, root denied")"
   [[ -z $closed ]] || ok "$(T "Старый порт закрыт и в sshd, и в firewall:" "The old port is closed, in sshd and in the firewall:") ${closed% }"
-  bad=$(ssh_settings_not_in_effect)
-  [[ -z $bad ]] || warn "$(T "Эти настройки SSH не действуют — их перекрывает что-то выше в /etc/ssh/sshd_config или в sshd_config.d:" \
-                            "These SSH settings are not in effect — something earlier in /etc/ssh/sshd_config or in sshd_config.d overrides them:") $bad"
   stash_sshd_config_dist
 }
 
@@ -2198,7 +2200,7 @@ chk() {  # chk pass|warn|fail|info "text" — info is shown and not counted: a f
 }
 
 run_check() {
-  local cfg v kex weak n list u out nons=no other
+  local cfg k v kex weak n list u out nons=no other
   . /etc/os-release
   step "$(T "Проверка сервера — ничего не меняется" "Server check — nothing is changed")"
   echo "  ${PRETTY_NAME:-?}, kernel $(uname -r)"
@@ -2237,10 +2239,10 @@ run_check() {
     [[ -z $list ]] && chk pass "$(T "sshd слушает только порты из конфигурации" "sshd listens only on configured ports")" \
       || chk fail "$(T "sshd слушает порт вне конфигурации: ${list}— остался старый процесс (sudo systemctl restart ssh или перезагрузка)" \
                       "sshd also listens outside its config: ${list}— a leftover daemon (sudo systemctl restart ssh, or reboot)")"
-    [[ $(sv permitrootlogin) == no ]] && chk pass "PermitRootLogin no" || chk fail "PermitRootLogin $(sv permitrootlogin)"
-    [[ $(sv passwordauthentication) == no ]] && chk pass "PasswordAuthentication no" || chk fail "PasswordAuthentication $(sv passwordauthentication)"
-    [[ $(sv kbdinteractiveauthentication) == no ]] && chk pass "KbdInteractiveAuthentication no" || chk fail "KbdInteractiveAuthentication $(sv kbdinteractiveauthentication)"
-    [[ $(sv permitemptypasswords) == no ]] && chk pass "PermitEmptyPasswords no" || chk fail "PermitEmptyPasswords $(sv permitemptypasswords)"
+    for u in "${SSH_AUTH_POLICY[@]}"; do   # the list the setup writes; sshd -T prints keys in lowercase
+      k=${u%% *}; v=$(sv "${k,,}")
+      [[ $v == "${u#* }" ]] && chk pass "$u" || chk fail "$k $v"
+    done
     v=$(sv maxauthtries); (( ${v:-6} <= 3 )) && chk pass "MaxAuthTries $v" || chk warn "MaxAuthTries $v ($(T "лучше" "better") ≤ 3)"
     [[ $(sv x11forwarding) == no ]] && chk pass "X11Forwarding no" || chk warn "X11Forwarding $(sv x11forwarding)"
     [[ -n $(sv allowusers) ]] && chk pass "AllowUsers $(sv allowusers)" || chk warn "$(T "AllowUsers не задан — войти может любой пользователь с ключом" "AllowUsers not set — any user with a key can log in")"
@@ -2335,17 +2337,7 @@ run_check() {
   [[ -f /var/run/reboot-required ]] && chk warn "$(T "Нужна перезагрузка" "Reboot required")" || chk pass "$(T "Перезагрузка не нужна" "No reboot needed")"
   [[ $(timedatectl show -p NTPSynchronized --value 2>/dev/null) == yes ]] \
     && chk pass "$(T "Время синхронизировано" "Clock synchronised")" || chk warn "$(T "Время не синхронизировано" "Clock not synchronised")"
-  list=""
-  if [[ -r $SYSCTL_CONF ]]; then
-    list=$(sysctl_overridden)   # every value the setup wrote has to be in effect still
-  else
-    for v in kernel.kptr_restrict=2 kernel.dmesg_restrict=1 kernel.randomize_va_space=2 fs.suid_dumpable=0 \
-             fs.protected_symlinks=1 fs.protected_hardlinks=1 net.ipv4.tcp_syncookies=1 \
-             net.ipv4.conf.all.accept_redirects=0 net.ipv4.conf.all.send_redirects=0 \
-             net.ipv4.conf.all.accept_source_route=0 net.ipv4.conf.all.rp_filter=1; do
-      [[ $(sysctl -n "${v%%=*}" 2>/dev/null) == "${v#*=}" ]] || list+="${v%%=*} "
-    done
-  fi
+  list=$(sysctl_overridden)
   [[ -z $list ]] && chk pass "$(T "Параметры ядра (sysctl)" "Kernel settings (sysctl)")" || chk warn "$(T "Отличаются от рекомендуемых:" "Differ from recommended:") $list"
 
   echo
@@ -2489,7 +2481,7 @@ run_refresh() {
 # removed. What stays: the installed packages, and the user the setup created.
 run_undo() {
   local -a dirs=(/root/harden-backup-*)
-  local first="" b f u shell groups g real was now p fw_out
+  local first="" b f u shell groups g real now p fw_out
   # The oldest backup that was made before the setup: one that already holds the setup's own
   # SSH file was taken on a server that was hardened by then, and "restoring" it would put
   # the hardening back.
@@ -2510,17 +2502,20 @@ run_undo() {
   ask_yn "$(T "Откатить настройку?" "Undo the setup?")" n || die "$(T "Отменено." "Cancelled.")"
 
   # SSH: the old files back, one daemon on the old ports
-  was=$(current_ssh_ports)
   rm -f "$SSHD_DROPIN"
   cp -a "$first/ssh/." /etc/ssh/
   now=$(current_ssh_ports)
-  CURRENT_SSH_PORTS=$was
   # The old ports are opened before sshd moves to them: whatever happens to the firewall
   # further down, the way back in is not left closed.
   for p in $now; do ufw allow "$p/tcp" >/dev/null 2>&1 || true; done
-  # shellcheck disable=SC2086
-  if restart_sshd $now; then ok "$(T "SSH: как было, порты:" "SSH: as it was, ports:") $now"
-  else warn "$(T "sshd не перезапустился со старыми настройками — смотри вывод выше" "sshd did not restart on the old settings — see above")"; fi
+  # shellcheck disable=SC2086  # a list of ports
+  if ssh_apply && wait_sshd_listening $now; then
+    ok "$(T "SSH: как было, порты:" "SSH: as it was, ports:") $now"
+  else
+    warn "$(T "sshd не поднялся со старыми настройками:" "sshd did not come up on the old settings:")"
+    # shellcheck disable=SC2086
+    sshd_port_report $now
+  fi
 
   # Firewall: as it was before the setup — its old rules if it was on, off if it was off
   # or not there at all. What ufw says is shown, not thrown away.

@@ -347,150 +347,70 @@ jobs:
           sudo systemctl start apport 2>/dev/null || true
           test "$(sysctl -n fs.suid_dumpable)" = 0
 
-      - name: Socket-activated sshd, as on an Ubuntu 24.04 cloud image — the switch to the plain service
-        # Found live: systemd had the socket-activated daemon's unit down as inactive while
-        # the daemon was running and was still reported as MainPID. `systemctl stop` did
-        # nothing, the setup spared the daemon as "the unit's own", and the new one could
-        # not bind port 22 — versions 2026.10.8 to 2026.10.17 rolled back at this step.
-        #
-        # This job reproduces that state with `systemctl enable ssh.service` on a running,
-        # socket-activated unit — in some runs, not in others; it seems to turn on the
-        # order in which systemd restores units after the reload, so systemd is re-executed
-        # before each attempt to shuffle it. It also showed what must not be done about it:
-        # signalling that daemon while systemd reads the unit as inactive freezes PID 1.
+      - name: SSH on a socket-activated sshd (Ubuntu 22.10+) — a new port without turning the socket off
+        # The ports of ssh.socket come from sshd_config through sshd-socket-generator. A port
+        # change is a daemon-reload and a fresh start of the socket; the service is never
+        # switched under a running daemon — that is what once left systemd with a unit it
+        # read as stopped and a daemon still holding the old port (ADR 0001).
         run: |
           set -x
+          test -x /usr/lib/systemd/system-generators/sshd-socket-generator
           sudo ssh-keygen -A
-          printf '[Unit]\nBefore=sshd.service\n[Service]\nType=oneshot\nRemainAfterExit=yes\nExecStart=/bin/true\n' \
-            | sudo tee /etc/systemd/system/ci-refers-sshd.service >/dev/null
-          # A fresh cloud image: socket on, service off, no alias, a unit referring to
-          # sshd.service (cloud-init's does), and a daemon started by the first connection.
-          fresh_image() {
-            sudo systemctl stop ssh.service ssh.socket 2>/dev/null || true
-            sudo systemctl disable ssh.service 2>/dev/null || true
-            sudo rm -f /etc/systemd/system/sshd.service
-            sudo systemctl daemon-reexec
-            sudo systemctl daemon-reload
-            sudo systemctl reset-failed ssh.service 2>/dev/null || true
-            sudo systemctl start ci-refers-sshd.service
-            sudo systemctl enable --now ssh.socket
-            timeout 5 bash -c 'exec 3<>/dev/tcp/127.0.0.1/22; head -c 8 <&3' || true
-            for _ in 1 2 3 4 5 6 7 8 9 10; do systemctl is-active --quiet ssh && break; sleep 0.5; done
-            systemctl is-active ssh
-            old=$(systemctl show -p MainPID --value ssh)
-            test "$old" != 0
-          }
-          # After the switch: systemd still answers, one new daemon holds both ports, the
-          # old one is gone, the socket is off.
-          switched() {
-            cat switch.out
-            timeout 20 systemctl is-system-running || true
-            timeout 20 systemctl show -p MainPID --value ssh >/dev/null \
-              || { echo "::error::systemd does not answer — PID 1 is frozen"; exit 1; }
-            if systemctl is-enabled --quiet ssh.socket; then echo "::error::ssh.socket is still enabled"; exit 1; fi
-            main=$(systemctl show -p MainPID --value ssh)
-            test "$main" != 0
-            test "$main" != "$old"
-            sudo ss -Hltnp 'sport = :22'   | grep -F "\"sshd\",pid=$main,"
-            sudo ss -Hltnp 'sport = :2223' | grep -F "\"sshd\",pid=$main,"
-            if sudo kill -0 "$old" 2>/dev/null; then echo "::error::the socket-activated daemon is still alive"; exit 1; fi
-            if grep -q 'not bound to all of' switch.out; then echo "::error::the switch failed"; exit 1; fi
-          }
+          sudo systemctl disable --now ssh.service 2>/dev/null || true
+          sudo systemctl enable --now ssh.socket
+          sudo bash -c 'source ./harden.sh; ssh_socket_mode'
+          sudo bash -c 'source ./harden.sh; ssh_apply_script' | tee apply.txt
+          grep -qx 'systemctl start ssh.socket' apply.txt
+          # a session from before the switch, held open through it
+          timeout 60 bash -c 'exec 3<>/dev/tcp/127.0.0.1/22; cat <&3 >/dev/null' &   # ends when sshd drops it
+          sleep 2
+          systemctl is-active ssh
           printf 'Port 22\nPort 2223\n' | sudo tee /etc/ssh/sshd_config.d/00-ci.conf >/dev/null
-
-          # 1. The setup's own step on a fresh image: sshd is stopped first, the units are
-          #    switched afterwards.
-          fresh_image
-          sudo bash -c 'source ./harden.sh; CURRENT_SSH_PORTS=22; restart_sshd 22 2223' > switch.out 2>&1 || true
-          switched
-
-          # 2. The state as it was found: the units switched while the daemon runs. Tried
-          #    several times, since systemd falls into it only sometimes.
-          seen=0
-          for attempt in 1 2 3 4 5 6; do
-            fresh_image
-            sudo systemctl disable ssh.socket
-            sudo systemctl enable ssh.service
-            state=$(systemctl is-active ssh || true)
-            echo "attempt $attempt: unit '$state', MainPID $(systemctl show -p MainPID --value ssh), daemon $old $(sudo kill -0 "$old" 2>/dev/null && echo alive || echo gone)"
-            if [ "$state" != active ] && sudo kill -0 "$old" 2>/dev/null; then seen=$((seen + 1)); fi
-            sudo bash -c 'source ./harden.sh; CURRENT_SSH_PORTS=22; restart_sshd 22 2223' > switch.out 2>&1 || true
-            switched
-          done
-          echo "::notice::the state found live — unit inactive, its daemon running — came up in $seen of 6 attempts"
-
+          sudo bash -c 'source ./harden.sh; ssh_apply && wait_sshd_listening 22 2223'
+          for p in 22 2223; do timeout 5 bash -c "exec 3<>/dev/tcp/127.0.0.1/$p; head -c 4 <&3" | grep -q SSH-; done
+          # systemd still answers, and the socket is still how sshd starts
+          timeout 20 systemctl show -p MainPID --value ssh >/dev/null || { echo "::error::PID 1 does not answer"; exit 1; }
+          systemctl is-enabled ssh.socket
+          printf 'Port 2223\n' | sudo tee /etc/ssh/sshd_config.d/00-ci.conf >/dev/null
+          sudo bash -c 'source ./harden.sh; ssh_apply && wait_sshd_listening 2223'
+          test -z "$(sudo bash -c 'source ./harden.sh; sshd_still_on 22')"
+          if timeout 5 bash -c 'exec 3<>/dev/tcp/127.0.0.1/22' 2>/dev/null; then echo "::error::port 22 still open"; exit 1; fi
+          # the session opened before the switch is still there
+          jobs -l
+          kill -0 %1 || { echo "::error::the switch ended a session"; exit 1; }
+          kill %1 || true
+          sudo rm -f /etc/ssh/sshd_config.d/00-ci.conf
+          sudo bash -c 'source ./harden.sh; ssh_apply && wait_sshd_listening 22'
+          sudo systemctl disable --now ssh.socket
           sudo systemctl stop ssh
-          sudo rm -f /etc/ssh/sshd_config.d/00-ci.conf /etc/systemd/system/ci-refers-sshd.service
-          sudo systemctl daemon-reload
 
-      - name: A leftover sshd does not survive the port switch
-        # Replays what a live run showed: an sshd that systemd was not going to stop held
-        # port 22 through both restarts, on the old config; the new daemon could not bind
-        # 22 and nothing noticed.
+      - name: SSH on a plain service — a reload, and a port sshd cannot bind is reported
         run: |
           set -x
           sudo systemctl disable --now ssh.socket 2>/dev/null || true
-          sudo systemctl stop ssh 2>/dev/null || true
-          sudo mkdir -p /run/sshd
-          sudo ssh-keygen -A                           # host keys, if the image has none
-          sudo /usr/sbin/sshd -o PidFile=none          # a daemon outside the unit, on port 22
-          stray=$(sudo ss -Hltnp 'sport = :22' | grep -oE '"sshd",pid=[0-9]+' | grep -oE '[0-9]+$' | sort -u)
-          test -n "$stray"
-          # the audit sees a daemon on a port the unit's config will not have
-          printf 'Port 2223\n' | sudo tee /etc/ssh/sshd_config.d/00-ci.conf >/dev/null
-          out=$(sudo HARDEN_LANG=en bash harden.sh --check 2>&1) || true
-          echo "$out" | grep -F 'sshd also listens outside its config: 22'
-          # the switch: both ports, as in stage 1
-          printf 'Port 22\nPort 2223\n' | sudo tee /etc/ssh/sshd_config.d/00-ci.conf >/dev/null
-          sudo bash -c 'source ./harden.sh; CURRENT_SSH_PORTS=22; restart_sshd 22 2223' 2>&1 | tee switch.out
+          sudo systemctl enable --now ssh.service
+          if sudo bash -c 'source ./harden.sh; ssh_socket_mode'; then echo "::error::took the plain service for the socket"; exit 1; fi
+          grep -qx 'systemctl reload-or-restart ssh.service' <(sudo bash -c 'source ./harden.sh; ssh_apply_script')
           main=$(systemctl show -p MainPID --value ssh)
-          test "$main" != 0 && test "$main" != "$stray"
-          sudo ss -Hltnp 'sport = :22'   | grep -q "\"sshd\",pid=$main,"
-          sudo ss -Hltnp 'sport = :2223' | grep -q "\"sshd\",pid=$main,"
-          if sudo kill -0 "$stray" 2>/dev/null; then echo "::error::the leftover sshd is still alive"; exit 1; fi
-          # stage 2: one port, and nothing left on the old one
           printf 'Port 2223\n' | sudo tee /etc/ssh/sshd_config.d/00-ci.conf >/dev/null
-          sudo bash -c 'source ./harden.sh; CURRENT_SSH_PORTS=22; restart_sshd 2223' 2>&1 | tee -a switch.out
-          # a clean switch prints no error lines (finding no leftover used to trip the ERR trap)
-          if grep -q 'Error at line' switch.out; then echo "::error::spurious error output"; exit 1; fi
-          test -z "$(sudo ss -Hltnp 'sport = :22')"
-          out=$(sudo HARDEN_LANG=en bash harden.sh --check 2>&1) || true
-          echo "$out" | grep -F 'sshd listens only on configured ports'
-          # a daemon that cannot bind what it was asked to is reported, not accepted
-          python3 -m http.server 2224 --bind :: >/dev/null 2>&1 &   # dual-stack: takes 2224 for IPv4 and IPv6
+          sudo bash -c 'source ./harden.sh; ssh_apply && wait_sshd_listening 2223'
+          # a reload: the same daemon, now on the new port only
+          test "$(systemctl show -p MainPID --value ssh)" = "$main"
+          test -z "$(sudo bash -c 'source ./harden.sh; sshd_still_on 22')"
+          # a port taken by another program does not pass for sshd's
+          python3 -m http.server 2224 --bind :: >/dev/null 2>&1 &
           for _ in 1 2 3 4 5 6 7 8 9 10; do ss -Hltn 'sport = :2224' | grep -q . && break; sleep 0.5; done
           printf 'Port 2223\nPort 2224\n' | sudo tee /etc/ssh/sshd_config.d/00-ci.conf >/dev/null
-          rc=0; sudo bash -c 'source ./harden.sh; CURRENT_SSH_PORTS=2223; restart_sshd 2223 2224' > switch.out 2>&1 || rc=$?
-          cat switch.out
-          if [ "$rc" = 0 ]; then sudo ss -Hltnp 'sport = :2224'; echo "::error::accepted an sshd that did not bind every port"; exit 1; fi
-          grep -q 'not bound to all of: 2223 2224' switch.out
+          if sudo bash -c 'source ./harden.sh; ssh_apply && wait_sshd_listening 2223 2224'; then
+            sudo ss -Hltnp 'sport = :2224'; echo "::error::accepted an sshd that did not bind every port"; exit 1
+          fi
           kill %1 2>/dev/null || true
-          # a process that is merely called sshd is not the script's to stop
-          cp "$(readlink -f /usr/bin/python3)" /tmp/sshd
-          PYTHONHOME=/usr /tmp/sshd -m http.server 2230 --bind 127.0.0.1 >/dev/null 2>&1 &
-          fake=$!
-          for _ in 1 2 3 4 5 6 7 8 9 10; do ss -Hltn 'sport = :2230' | grep -q . && break; sleep 0.5; done
-          sudo ss -Hltnp 'sport = :2230' | grep -F '"sshd",pid='
-          sudo bash -c 'source ./harden.sh; kill_sshd_listeners_on 2230'
-          sleep 1
-          kill -0 "$fake" || { echo "::error::stopped a process that only shares the name"; exit 1; }
-          kill "$fake"
-          # The process systemd reports as the unit's MainPID is never signalled here:
-          # doing that while the unit reads as inactive is what freezes PID 1. Getting a
-          # stale one out of systemd's books is forget_stale_main_pid's job (previous step).
+          # the audit sees a daemon on a port the config does not name
+          sudo mkdir -p /run/sshd
           sudo /usr/sbin/sshd -o PidFile=none -p 2231
-          named=$(sudo ss -Hltnp 'sport = :2231' | grep -oE '"sshd",pid=[0-9]+' | grep -oE '[0-9]+$' | sort -u)
-          test -n "$named"
-          mkdir -p lie
-          printf '#!/bin/sh\ncase "$*" in *MainPID*) echo %s ;; *) exec /usr/bin/systemctl "$@" ;; esac\n' "$named" > lie/systemctl
-          chmod +x lie/systemctl
-          sudo env "PATH=$PWD/lie:$PATH" bash -c 'source ./harden.sh; kill_sshd_listeners_on 2231'
-          sleep 1
-          sudo kill -0 "$named" || { echo "::error::signalled the process systemd names as MainPID"; exit 1; }
-          # ...and once systemd no longer names it, it is a leftover like any other
-          sudo bash -c 'source ./harden.sh; kill_sshd_listeners_on 2231'
-          sleep 1
-          if sudo kill -0 "$named" 2>/dev/null; then echo "::error::a leftover daemon survived"; exit 1; fi
+          out=$(sudo HARDEN_LANG=en bash harden.sh --check 2>&1) || true
+          echo "$out" | grep -F 'sshd also listens outside its config: 2231'
+          sudo pkill -f 'sshd -o PidFile=none -p 2231' || true
           # KillMode is checked, not assumed: a unit that would take sessions down with it
           # is corrected for the length of the switch
           sudo mkdir -p /etc/systemd/system/ssh.service.d
@@ -500,65 +420,78 @@ jobs:
           sudo bash -c 'source ./harden.sh; ensure_ssh_killmode'
           test "$(systemctl show -p KillMode --value ssh)" = process
           sudo rm -rf /etc/systemd/system/ssh.service.d/override.conf /run/systemd/system/ssh.service.d
+          sudo rm -f /etc/ssh/sshd_config.d/00-ci.conf
           sudo systemctl daemon-reload
-          # the generated SSH config is one sshd accepts; other accounts get in only when
-          # named, and only existing ones — never root, never a typo
+          sudo systemctl stop ssh
+
+      - name: SSH config — who gets in, and the test sshd of stage 1
+        run: |
+          set -x
           sudo mkdir -p /run/sshd
+          # the generated config is one sshd accepts; other accounts get in only when named,
+          # and only existing ones — never root, never a typo
           sudo bash -c 'source ./harden.sh; SSHD_DROPIN=/tmp/ci-sshd.conf; NEW_USER=runner
             SSH_EXTRA_USERS=$(valid_extra_users "root,runner nosuchuser daemon"); write_sshd_config 2231'
           sudo grep -x 'AllowUsers runner daemon' /tmp/ci-sshd.conf
           sudo /usr/sbin/sshd -t -f /tmp/ci-sshd.conf
           sudo bash -c 'source ./harden.sh; SSHD_DROPIN=/tmp/ci-sshd.conf; NEW_USER=runner; write_sshd_config 2231'
           sudo grep -x 'AllowUsers runner' /tmp/ci-sshd.conf
-          # the first stage of the switch: the rules that decide who gets in hold for the
-          # new port only — asked of sshd itself, for a connection to each port
-          sudo bash -c 'source ./harden.sh; SSHD_DROPIN=/tmp/ci-sshd.conf; NEW_USER=runner; write_sshd_config "22 2231" 2231'
-          sudo /usr/sbin/sshd -t -f /tmp/ci-sshd.conf
-          on_new=$(sudo /usr/sbin/sshd -T -f /tmp/ci-sshd.conf -C user=runner,host=localhost,addr=127.0.0.1,lport=2231)
-          on_old=$(sudo /usr/sbin/sshd -T -f /tmp/ci-sshd.conf -C user=runner,host=localhost,addr=127.0.0.1,lport=22)
-          printf '%s\n' "$on_new" | grep -x 'permitrootlogin no'
-          printf '%s\n' "$on_new" | grep -x 'passwordauthentication no'
-          printf '%s\n' "$on_new" | grep -x 'allowusers runner'
-          printf '%s\n' "$on_new" | grep -x 'authenticationmethods publickey'
-          if printf '%s\n' "$on_old" | grep -x 'permitrootlogin no\|allowusers runner\|authenticationmethods publickey'; then
-            echo "::error::the old port got the new rules before the login was confirmed"; exit 1
-          fi
-          # The setup run again on a server it has set up before, with another port: the
-          # old port keeps the rules of the earlier run — not the provider's sshd_config
-          # underneath, which is what it fell back to — and the new port gets the new ones
-          sudo bash -c 'source ./harden.sh; SSHD_DROPIN=/tmp/ci-sshd.conf; test -z "$(ssh_access_in_force)"'
-          sudo bash -c 'source ./harden.sh; SSHD_DROPIN=/tmp/ci-sshd.conf; NEW_USER=daemon; write_sshd_config 22'
-          sudo bash -c 'source ./harden.sh; SSHD_DROPIN=/tmp/ci-sshd.conf; NEW_USER=runner; CURRENT_SSH_PORTS=22
-            write_sshd_config "22 2231" 2231 "$(ssh_access_in_force)"'
-          sudo /usr/sbin/sshd -t -f /tmp/ci-sshd.conf
-          on_new=$(sudo /usr/sbin/sshd -T -f /tmp/ci-sshd.conf -C user=runner,host=localhost,addr=127.0.0.1,lport=2231)
-          on_old=$(sudo /usr/sbin/sshd -T -f /tmp/ci-sshd.conf -C user=daemon,host=localhost,addr=127.0.0.1,lport=22)
-          printf '%s\n' "$on_old" | grep -x 'passwordauthentication no'
-          printf '%s\n' "$on_old" | grep -x 'permitrootlogin no'
-          printf '%s\n' "$on_old" | grep -x 'authenticationmethods publickey'
-          printf '%s\n' "$on_old" | grep -x 'allowusers daemon'
-          if printf '%s\n' "$on_old" | grep -x 'allowusers runner'; then
-            echo "::error::the old port got the new user before the login was confirmed"; exit 1
-          fi
-          printf '%s\n' "$on_new" | grep -x 'allowusers runner'
-          if printf '%s\n' "$on_new" | grep -x 'allowusers daemon'; then
-            echo "::error::the new port lets in the account of the earlier run"; exit 1
-          fi
-          # ...and with the same port there is no other port to keep the old way in on:
-          # the account that could log in stays allowed until the login is confirmed
-          sudo bash -c 'source ./harden.sh; SSHD_DROPIN=/tmp/ci-sshd.conf; NEW_USER=daemon; write_sshd_config 2231'
-          sudo bash -c 'source ./harden.sh; SSHD_DROPIN=/tmp/ci-sshd.conf; NEW_USER=runner; CURRENT_SSH_PORTS=2231
-            write_sshd_config 2231 2231 "$(ssh_access_in_force)"'
-          sudo /usr/sbin/sshd -t -f /tmp/ci-sshd.conf
-          on_new=$(sudo /usr/sbin/sshd -T -f /tmp/ci-sshd.conf -C user=runner,host=localhost,addr=127.0.0.1,lport=2231)
-          printf '%s\n' "$on_new" | grep -x 'allowusers runner'
-          printf '%s\n' "$on_new" | grep -x 'allowusers daemon'
-          printf '%s\n' "$on_new" | grep -x 'passwordauthentication no'
-          # confirmed: the new user only
-          sudo bash -c 'source ./harden.sh; SSHD_DROPIN=/tmp/ci-sshd.conf; NEW_USER=runner; write_sshd_config 2231'
-          sudo grep -x 'AllowUsers runner' /tmp/ci-sshd.conf
+          eff=$(sudo /usr/sbin/sshd -T -f /tmp/ci-sshd.conf -C user=runner,host=localhost,addr=127.0.0.1,lport=2231)
+          for kv in 'permitrootlogin no' 'passwordauthentication no' 'authenticationmethods publickey' 'allowusers runner'; do
+            printf '%s\n' "$eff" | grep -x "$kv"
+          done
           sudo rm -f /tmp/ci-sshd.conf
-          sudo rm -f /etc/ssh/sshd_config.d/00-ci.conf
+          # Stage 1: a second sshd with the new settings on the new port; the running one —
+          # its port, its config files, its daemon — is not touched
+          sudo systemctl enable --now ssh.service
+          printf 'PasswordAuthentication yes\n' | sudo tee /etc/ssh/sshd_config.d/50-provider.conf >/dev/null
+          before=$(sudo md5sum /etc/ssh/sshd_config /etc/ssh/sshd_config.d/* 2>/dev/null; systemctl show -p MainPID --value ssh)
+          sudo bash -c 'source ./harden.sh; NEW_USER=runner; SSH_PORT=2233; start_test_sshd'
+          timeout 5 bash -c 'exec 3<>/dev/tcp/127.0.0.1/2233; head -c 4 <&3' | grep -q SSH-
+          systemctl is-active harden-sshd-test
+          # the test sshd runs the new settings, ahead of the provider's drop-in, which is still read
+          sudo ls -l /run/harden/sshd-test/conf.d/
+          sudo test -L /run/harden/sshd-test/conf.d/50-provider.conf
+          eff=$(sudo /usr/sbin/sshd -T -f /run/harden/sshd-test/sshd_config -C user=runner,host=localhost,addr=127.0.0.1,lport=2233)
+          printf '%s\n' "$eff" | grep -x 'passwordauthentication no'
+          printf '%s\n' "$eff" | grep -x 'allowusers runner'
+          test -z "$(sudo bash -c 'source ./harden.sh; NEW_USER=runner; SSH_PORT=2233; ssh_settings_not_in_effect /run/harden/sshd-test/sshd_config')"
+          after=$(sudo md5sum /etc/ssh/sshd_config /etc/ssh/sshd_config.d/* 2>/dev/null; systemctl show -p MainPID --value ssh)
+          test "$before" = "$after" || { echo "::error::stage 1 changed the running SSH"; exit 1; }
+          sudo bash -c 'source ./harden.sh; stop_test_sshd'
+          if timeout 5 bash -c 'exec 3<>/dev/tcp/127.0.0.1/2233' 2>/dev/null; then echo "::error::the test sshd is still there"; exit 1; fi
+          sudo rm -f /etc/ssh/sshd_config.d/50-provider.conf
+
+      - name: SSH stage 2 — the way back runs by itself when the login is not confirmed
+        # The timer is the part that has to work with nobody there: the session gone, the
+        # script killed. So it is let run out here, and SSH has to be back as it was.
+        run: |
+          set -x
+          sudo systemctl enable --now ssh.service
+          sudo mkdir -p /root/ci-backup && sudo cp -a /etc/ssh /root/ci-backup/ssh
+          # what stage 2 does: the way back armed, then the new settings applied
+          sudo bash -c 'source ./harden.sh; BACKUP_DIR=/root/ci-backup; SSHD_DROPIN=/etc/ssh/sshd_config.d/00-hardening.conf
+            NEW_USER=runner; write_ssh_rollback; arm_ssh_rollback 15
+            write_sshd_config 2233 && ssh_apply && wait_sshd_listening 2233'
+          sudo test -e /etc/ssh/sshd_config.d/00-hardening.conf
+          sudo bash -c 'source ./harden.sh; ssh_rollback_pending'
+          for _ in $(seq 30); do sudo bash -c 'source ./harden.sh; ssh_rollback_pending' || break; sleep 1; done
+          sleep 2
+          sudo journalctl -u harden-ssh-rollback --no-pager -n 20 || true
+          sudo test ! -e /etc/ssh/sshd_config.d/00-hardening.conf || { echo "::error::the timer did not take the new settings back"; exit 1; }
+          sudo bash -c 'source ./harden.sh; wait_sshd_listening 22'
+          test -z "$(sudo bash -c 'source ./harden.sh; sshd_still_on 2233')"
+          # ...and a confirmed login disarms it: nothing is taken back
+          sudo bash -c 'source ./harden.sh; BACKUP_DIR=/root/ci-backup; SSHD_DROPIN=/etc/ssh/sshd_config.d/00-hardening.conf
+            NEW_USER=runner; write_ssh_rollback; arm_ssh_rollback 5
+            write_sshd_config 2233 && ssh_apply && wait_sshd_listening 2233; disarm_ssh_rollback'
+          if sudo bash -c 'source ./harden.sh; ssh_rollback_pending'; then echo "::error::still armed"; exit 1; fi
+          sleep 8
+          sudo test -e /etc/ssh/sshd_config.d/00-hardening.conf
+          sudo bash -c 'source ./harden.sh; wait_sshd_listening 2233'
+          # back to how the runner was
+          sudo rm -f /etc/ssh/sshd_config.d/00-hardening.conf
+          sudo bash -c 'source ./harden.sh; ssh_apply'
           sudo systemctl stop ssh
 
       - name: Telegram alerts against a fake Bot API

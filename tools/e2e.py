@@ -20,6 +20,8 @@ what happens to it afterwards:
   - the setup a second time, through the installed `sudo harden`, keeping the saved bot;
   - the setup a third time with another SSH port and a network as the admin's address —
     the old port has to keep the rules of the earlier setup until the new one is confirmed;
+  - every setup ends with a second confirmation, of a login through the server's own sshd
+    once it has the new settings; until then a timer stands ready to put SSH back;
   - --undo, after which the system files have to be byte for byte what they were.
 
 It exists because a part that passed every piece-by-piece test still failed as a whole:
@@ -296,7 +298,8 @@ def drive(port, user, command, password, stage, finish=r"Done!", login_check=Tru
         pexpect.EOF,                              # 7
         pexpect.TIMEOUT,                          # 8
         r"Press Enter to close tmux",             # 9
-    ] + [q for q, _ in questions]                 # 10 and on: the interview
+        r"Does a new login on port \d+ still work", # 10 stage 2: the running sshd has the new settings
+    ] + [q for q, _ in questions]                 # 11 and on: the interview
     done = False
     confirmed = not login_check
     in_tmux = False
@@ -304,11 +307,11 @@ def drive(port, user, command, password, stage, finish=r"Done!", login_check=Tru
     while True:
         i = child.expect(patterns)
         key = child.match.group(1) if i == 0 else i
-        if (i in (0, 1, 2, 3, 6, 9) or i >= 10) and key in answered:
+        if (i in (0, 1, 2, 3, 6, 9, 10) or i >= 11) and key in answered:
             continue        # the same question, painted again
         answered.add(key)
-        if i >= 10:
-            child.sendline(questions[i - 10][1])
+        if i >= 11:
+            child.sendline(questions[i - 11][1])
         elif i == 0:
             child.sendline("y")
             if typeahead and key == "Start":
@@ -316,17 +319,17 @@ def drive(port, user, command, password, stage, finish=r"Done!", login_check=Tru
                 child.sendline("y")
         elif i in (1, 2, 6):
             child.sendline(password)
-        elif i == 3:
+        elif i in (3, 10):
             # What the script asks a person to do: try the new port from outside, and only
-            # then say yes.
+            # then say yes. At 3 a test sshd answers there; at 10 the server's own sshd does.
             asked = int(re.search(r"port (\d+)", child.after).group(1))
             r = ssh(asked, "alex", "id -un", check=False)
             if r.stdout.strip() != "alex":
                 print(r.stdout, r.stderr)
                 fail("the login on the new port does not work at the moment the script asks about it")
-            if at_question:
+            if i == 3 and at_question:
                 at_question(password)
-            confirmed = True
+            confirmed = confirmed or i == 10
             child.sendline("y")
         elif i == 4:
             done = True
@@ -347,7 +350,7 @@ def drive(port, user, command, password, stage, finish=r"Done!", login_check=Tru
         fail(f"{stage} ended without finishing (done={done}, login confirmed={confirmed})")
     # every question of the interview has to have been asked, bar the one about a reboot,
     # which is asked only when one is due
-    missed = [q for n, (q, _) in enumerate(questions) if n + 10 not in answered and "Reboot now" not in q]
+    missed = [q for n, (q, _) in enumerate(questions) if n + 11 not in answered and "Reboot now" not in q]
     if missed:
         fail(f"{stage}: these questions were never asked: {missed}")
     return in_tmux
@@ -419,7 +422,8 @@ def verify(password, when, port=NEW, admin=GATEWAY):
     gone = [22] + [p for p in (NEW, THIRD) if p != port]
     if f":{port} " not in r.stdout or any(f":{p} " in r.stdout for p in gone):
         fail("sshd is not listening on the new port only")
-    pids = {line.split("pid=")[1].split(",")[0] for line in r.stdout.splitlines() if "pid=" in line}
+    # where sshd is socket-activated, systemd holds the socket as well: only sshd's own pids count
+    pids = set(re.findall(r'"sshd",pid=(\d+)', r.stdout))
     if len(pids) != 1:
         fail(f"more than one sshd daemon is listening: {pids}")
     # Nothing but SSH listens on a public address (the DHCP client aside). On Debian 13
