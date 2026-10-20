@@ -42,8 +42,19 @@ jobs:
             echo "::error file=harden.sh::CRLF line endings"; exit 1
           fi
 
+      - name: harden.sh is what src/ builds
+        # The script is edited in src/ and shipped as one file; the two must not differ.
+        run: bash tools/build.sh --check
+
       - name: bash -n
         run: bash -n harden.sh
+
+      - name: Unit tests (bats)
+        # Single functions, sourced from harden.sh, with what they touch pointed at a
+        # temporary directory: quick to run, and they need neither root nor a VM.
+        run: |
+          sudo apt-get install -y -q bats >/dev/null
+          bats tests/
 
       - name: ShellCheck — harden.sh
         run: shellcheck --version && shellcheck -S warning harden.sh

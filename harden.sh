@@ -797,6 +797,7 @@ disable_apport() {
 
 # ---------- 4. system ----------
 SYSCTL_CONF=/etc/sysctl.d/99-hardening.conf
+PROTECT_LINKS_CONF=/etc/sysctl.d/99-protect-links.conf
 
 # The kernel settings, in one list: written by write_sysctl_conf, and compared with the
 # live values by sysctl_overridden — after the setup, and by --check on any server.
@@ -839,7 +840,7 @@ write_sysctl_conf() {
     for kv in "${SYSCTL_SETTINGS[@]}"; do
       [[ $kv == fs.protected_* ]] && echo "${kv%%=*} = ${kv#*=}"
     done
-  } >/etc/sysctl.d/99-protect-links.conf
+  } >"$PROTECT_LINKS_CONF"
 }
 
 # Settings whose live value is not the one in the list: something that loads later has
@@ -1618,7 +1619,7 @@ SSH_CONFIRM_SECONDS=${HARDEN_SSH_CONFIRM_SECONDS:-600}
 # the script was killed, or the new settings let nobody in to answer. It lives in /run:
 # after a reboot there is no timer either, and the settings confirmed at stage 1 stay.
 write_ssh_rollback() {
-  install -d -m 700 /run/harden
+  install -d -m 700 "${SSH_ROLLBACK%/*}"
   {
     echo '#!/bin/bash'
     echo "# Written by harden.sh $HARDEN_VERSION: puts SSH back the way it was before this run."
@@ -2594,7 +2595,7 @@ run_undo() {
   fi
 
   # Everything the setup added
-  rm -f "$SYSCTL_CONF" /etc/sysctl.d/99-protect-links.conf "$PING_SYSCTL" \
+  rm -f "$SYSCTL_CONF" "$PROTECT_LINKS_CONF" "$PING_SYSCTL" \
         /etc/modprobe.d/99-hardening.conf /etc/security/limits.d/99-nocore.conf \
         /etc/systemd/coredump.conf.d/99-hardening.conf /etc/systemd/journald.conf.d/99-hardening.conf \
         /etc/security/pwquality.conf.d/99-hardening.conf /etc/sudoers.d/99-hardening /etc/logrotate.d/harden-sudo \

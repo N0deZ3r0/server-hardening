@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# prepare-release.sh VERSION — set the version in harden.sh and put the matching download
+# prepare-release.sh VERSION — set the version in src/ and build harden.sh, then put the matching download
 # URL and checksum into both READMEs. Then commit, tag vVERSION and push the tag: the
 # Release workflow refuses to publish if any of the three disagree.
 #
@@ -17,8 +17,9 @@ for f in CHANGELOG.md CHANGELOG.ru.md; do
   grep -qx "## $v" "$f" || { echo "$f has no section '## $v' — write it first" >&2; exit 1; }
 done
 
-sed -i -E "s/^HARDEN_VERSION=\".*\"$/HARDEN_VERSION=\"$v\"/" harden.sh
-bash -n harden.sh
+# The version lives in src/; harden.sh is built from there
+sed -i -E "s/^HARDEN_VERSION=\".*\"$/HARDEN_VERSION=\"$v\"/" src/00-header.sh
+tools/build.sh
 # The checksum is taken after the version is written: the version is part of the file.
 sum=$(sha256sum harden.sh | cut -d' ' -f1)
 

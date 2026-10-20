@@ -51,6 +51,7 @@ jobs:
 
       - name: Syntax and ShellCheck
         run: |
+          bash tools/build.sh --check
           if grep -l $'\r' harden.sh; then echo "::error::CRLF line endings"; exit 1; fi
           bash -n harden.sh
           shellcheck -S warning harden.sh
