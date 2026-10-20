@@ -1,6 +1,6 @@
 # 0003 — One list for what the setup writes and what `--check` expects
 
-**Status:** in force since the release after 2026.10.28.
+**Status:** in force since 2026.10.29.
 
 ## The problem
 

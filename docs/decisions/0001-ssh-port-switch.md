@@ -1,6 +1,6 @@
 # 0001 — Moving SSH to a new port
 
-**Status:** in force since the release after 2026.10.28. Replaces the two-stage restart of
+**Status:** in force since 2026.10.29. Replaces the two-stage restart of
 the server's own sshd.
 
 ## The problem

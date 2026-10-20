@@ -38,7 +38,7 @@ set -Eeuo pipefail
 # where it is written. (Lessons from live runs: docs/decisions/0004-lessons-from-live-runs.md)
 umask 022
 
-HARDEN_VERSION="2026.10.28"
+HARDEN_VERSION="2026.10.29"
 LOG_FILE="/var/log/harden.log"
 REPORT_FILE="/root/harden-report.txt"
 BACKUP_DIR="/root/harden-backup-$(date +%Y%m%d-%H%M%S)"

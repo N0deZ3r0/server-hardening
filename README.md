@@ -5,7 +5,7 @@
 **One command turns a fresh Debian or Ubuntu VPS into a server that only lets in your key — and it will not close the old door until you have walked through the new one.**
 
 [![CI](https://github.com/N0deZ3r0/server-hardening/actions/workflows/ci.yml/badge.svg)](https://github.com/N0deZ3r0/server-hardening/actions/workflows/ci.yml)
-![version](https://img.shields.io/badge/version-2026.10.28-3b5bdb)
+![version](https://img.shields.io/badge/version-2026.10.29-3b5bdb)
 ![Debian](https://img.shields.io/badge/Debian-12%20%2F%2013-a80030)
 ![Ubuntu](https://img.shields.io/badge/Ubuntu-22.04%20%2F%2024.04%20%2F%2026.04-e95420)
 ![bash](https://img.shields.io/badge/bash-single%20file-2f9e44)
@@ -24,7 +24,7 @@ summary, can report to Telegram, and finishes with a Lynis audit. Later, `sudo h
 audits the server without changing anything. The interface is in English and Russian.
 
 ```bash
-curl -fsSLo harden.sh https://github.com/N0deZ3r0/server-hardening/releases/download/v2026.10.28/harden.sh && echo "043c8f523680748ab4d9181a20431dd8c03c9abbe642caf350553439b24cf2f3  harden.sh" | sha256sum -c - && sudo bash harden.sh
+curl -fsSLo harden.sh https://github.com/N0deZ3r0/server-hardening/releases/download/v2026.10.29/harden.sh && echo "95ff7d55f0e6ba33926d568fb8570da62ff7be9cb18702c7564ad352d6bcb5b5  harden.sh" | sha256sum -c - && sudo bash harden.sh
 ```
 
 The command downloads a fixed release and checks its SHA-256 before running it: if a single
@@ -344,7 +344,7 @@ On a server that is already set up, download the newer script and let it apply i
 settings — the same download and checksum, then `--refresh` instead of the setup:
 
 ```bash
-curl -fsSLo harden.sh https://github.com/N0deZ3r0/server-hardening/releases/download/v2026.10.28/harden.sh && echo "043c8f523680748ab4d9181a20431dd8c03c9abbe642caf350553439b24cf2f3  harden.sh" | sha256sum -c - && sudo bash harden.sh --refresh
+curl -fsSLo harden.sh https://github.com/N0deZ3r0/server-hardening/releases/download/v2026.10.29/harden.sh && echo "95ff7d55f0e6ba33926d568fb8570da62ff7be9cb18702c7564ad352d6bcb5b5  harden.sh" | sha256sum -c - && sudo bash harden.sh --refresh
 ```
 
 `--refresh` asks nothing. It writes the kernel settings, audit rules, auto-update settings,
@@ -431,10 +431,10 @@ Knowingly open, with the reason for each:
   the one daemon that had to go kept port 22. CI reproduces that state — `systemctl enable
   ssh.service` on a running, socket-activated unit — in some runs and not in others. It
   also showed the trap in the obvious fix: signalling that listener while systemd reads
-  the unit as inactive freezes PID 1. Since the release after 2026.10.28 the units are not
+  the unit as inactive freezes PID 1. Since 2026.10.29 the units are not
   switched at all: the port reaches `ssh.socket` the way Ubuntu documents it, through
   `sshd-socket-generator` ([ADR 0001](docs/decisions/0001-ssh-port-switch.md)).
-- **The new SSH switch (the release after 2026.10.28) has been run by hand once,** on a
+- **The new SSH switch (2026.10.29) has been run by hand once,** on a
   provider's Ubuntu 24.04 image (KVM, sshd through `ssh.socket`, OpenSSH 9.6): the setup
   with both login checks, a reboot, then a port change abandoned at the second check with
   the script killed — the timer put SSH back ten minutes later — and `--undo`, after which

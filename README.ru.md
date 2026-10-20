@@ -5,7 +5,7 @@
 **Одна команда превращает свежий VPS на Debian или Ubuntu в сервер, который пускает только по вашему ключу, — и не закроет старую дверь, пока вы не прошли через новую.**
 
 [![CI](https://github.com/N0deZ3r0/server-hardening/actions/workflows/ci.yml/badge.svg)](https://github.com/N0deZ3r0/server-hardening/actions/workflows/ci.yml)
-![version](https://img.shields.io/badge/version-2026.10.28-3b5bdb)
+![version](https://img.shields.io/badge/version-2026.10.29-3b5bdb)
 ![Debian](https://img.shields.io/badge/Debian-12%20%2F%2013-a80030)
 ![Ubuntu](https://img.shields.io/badge/Ubuntu-22.04%20%2F%2024.04%20%2F%2026.04-e95420)
 ![bash](https://img.shields.io/badge/bash-%D0%BE%D0%B4%D0%B8%D0%BD%20%D1%84%D0%B0%D0%B9%D0%BB-2f9e44)
@@ -25,7 +25,7 @@ CrowdSec, усиливает ядро, включает автообновлен
 Интерфейс — на русском и английском.
 
 ```bash
-curl -fsSLo harden.sh https://github.com/N0deZ3r0/server-hardening/releases/download/v2026.10.28/harden.sh && echo "043c8f523680748ab4d9181a20431dd8c03c9abbe642caf350553439b24cf2f3  harden.sh" | sha256sum -c - && sudo bash harden.sh
+curl -fsSLo harden.sh https://github.com/N0deZ3r0/server-hardening/releases/download/v2026.10.29/harden.sh && echo "95ff7d55f0e6ba33926d568fb8570da62ff7be9cb18702c7564ad352d6bcb5b5  harden.sh" | sha256sum -c - && sudo bash harden.sh
 ```
 
 Команда скачивает конкретный релиз и сверяет его SHA-256 до запуска: если отличается хоть
@@ -347,7 +347,7 @@ sudo harden --undo                     # откатить настройку и�
 те же загрузка и контрольная сумма, а вместо настройки `--refresh`:
 
 ```bash
-curl -fsSLo harden.sh https://github.com/N0deZ3r0/server-hardening/releases/download/v2026.10.28/harden.sh && echo "043c8f523680748ab4d9181a20431dd8c03c9abbe642caf350553439b24cf2f3  harden.sh" | sha256sum -c - && sudo bash harden.sh --refresh
+curl -fsSLo harden.sh https://github.com/N0deZ3r0/server-hardening/releases/download/v2026.10.29/harden.sh && echo "95ff7d55f0e6ba33926d568fb8570da62ff7be9cb18702c7564ad352d6bcb5b5  harden.sh" | sha256sum -c - && sudo bash harden.sh --refresh
 ```
 
 `--refresh` ничего не спрашивает. Он записывает настройки ядра, правила аудита, настройки
@@ -437,10 +437,10 @@ curl -fsSLo harden.sh https://github.com/N0deZ3r0/server-hardening/releases/down
   воспроизводит это состояние — `systemctl enable ssh.service` при работающей службе,
   запущенной через сокет, — в одних прогонах и не воспроизводит в других. Он же показал
   ловушку в очевидном исправлении: если послать сигнал этому процессу, пока systemd
-  считает службу остановленной, PID 1 зависает. Начиная с релиза после 2026.10.28 службы не
+  считает службу остановленной, PID 1 зависает. Начиная с 2026.10.29 службы не
   переключаются вовсе: порт доходит до `ssh.socket` так, как это описано у Ubuntu, — через
   `sshd-socket-generator` ([ADR 0001](docs/decisions/0001-ssh-port-switch.md)).
-- **Новое переключение SSH (релиз после 2026.10.28) один раз проведено вручную** — на
+- **Новое переключение SSH (2026.10.29) один раз проведено вручную** — на
   образе Ubuntu 24.04 настоящего хостера (KVM, sshd через `ssh.socket`, OpenSSH 9.6):
   настройка с обеими проверками входа, перезагрузка, затем смена порта, брошенная на втором
   вопросе с убитым скриптом, — таймер вернул SSH через десять минут, — и `--undo`, после

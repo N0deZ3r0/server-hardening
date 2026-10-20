@@ -7,7 +7,7 @@ where that version does not work — it is there because someone ran it and it d
 
 The text of each release on GitHub is generated from this file.
 
-## Unreleased
+## 2026.10.29
 
 Run by hand on a provider's Ubuntu 24.04 image: the setup, a reboot, a port change left
 unconfirmed with the script killed (the timer put SSH back), `--undo`. It found two things,
