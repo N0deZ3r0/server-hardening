@@ -181,6 +181,24 @@ strict() {
   sshd_listening 22
 }
 
+@test "ssh_settings_not_in_effect: overridden settings are named, and 'cannot tell' is not 'overridden'" {
+  NEW_USER=alex SSH_PORT=2233
+  mkdir() { :; }                                             # no /run/sshd outside root
+  sshd() { printf '%s
+' "${SSH_AUTH_POLICY[@],,}"; }        # sshd -T prints keys in lowercase
+  run ssh_settings_not_in_effect
+  [ "$status" -eq 0 ] && [ -z "$output" ]
+  sshd() { printf '%s
+' "${SSH_AUTH_POLICY[@],,}" | sed 's/^passwordauthentication no$/passwordauthentication yes/'; }
+  run ssh_settings_not_in_effect
+  [ "$output" = "[PasswordAuthentication no] " ]
+  sshd() { echo "Missing privilege separation directory: /run/sshd" >&2; return 255; }
+  run ssh_settings_not_in_effect
+  [ "$status" -eq 2 ] && [ -z "$output" ]
+  run warn_settings_not_in_effect
+  [[ $output == *"sshd -T failed"* && $output != *"not in effect"* ]]
+}
+
 # ---- kernel settings ----
 
 @test "write_sysctl_conf writes every setting once, and the link protection file from the same list" {

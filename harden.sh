@@ -1659,10 +1659,14 @@ stash_sshd_config_dist() {
 
 # What sshd will really do for a login on the new port, not what our file says: a line
 # earlier in sshd_config, or a drop-in that sorts before ours, wins ("first match wins").
-# -C makes sshd -T apply Match blocks as it would for such a connection.
+# -C makes sshd -T apply Match blocks as it would for such a connection. Returns 2 when
+# sshd -T cannot tell: that is not the same as settings being overridden.
 ssh_settings_not_in_effect() {  # ssh_settings_not_in_effect [sshd_config]
   local eff kv bad=""
-  eff=$(sshd -T -f "${1:-/etc/ssh/sshd_config}" -C "user=$NEW_USER,host=localhost,addr=127.0.0.1,lport=$SSH_PORT" 2>/dev/null || true)
+  # sshd -T refuses to run without /run/sshd, and systemd removes it whenever ssh.service
+  # stops — which in socket mode every switch does
+  mkdir -p /run/sshd
+  eff=$(sshd -T -f "${1:-/etc/ssh/sshd_config}" -C "user=$NEW_USER,host=localhost,addr=127.0.0.1,lport=$SSH_PORT" 2>/dev/null) || return 2
   for kv in "${SSH_AUTH_POLICY[@]}"; do
     grep -qxi "$kv" <<<"$eff" || bad+="[$kv] "
   done
@@ -1670,8 +1674,12 @@ ssh_settings_not_in_effect() {  # ssh_settings_not_in_effect [sshd_config]
 }
 
 warn_settings_not_in_effect() {  # warn_settings_not_in_effect [sshd_config]
-  local bad
-  bad=$(ssh_settings_not_in_effect "$@")
+  local bad rc=0
+  bad=$(ssh_settings_not_in_effect "$@") || rc=$?
+  if (( rc == 2 )); then
+    warn "$(T "sshd -T не отработал — какие настройки SSH действуют, не проверено" "sshd -T failed — which SSH settings are in effect was not checked")"
+    return 0
+  fi
   [[ -z $bad ]] || warn "$(T "Эти настройки SSH не действуют — их перекрывает что-то выше в /etc/ssh/sshd_config или в sshd_config.d:" \
                             "These SSH settings are not in effect — something earlier in /etc/ssh/sshd_config or in sshd_config.d overrides them:") $bad"
 }

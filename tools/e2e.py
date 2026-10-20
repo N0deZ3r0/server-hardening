@@ -293,7 +293,9 @@ def drive(port, user, command, password, stage, finish=r"Done!", login_check=Tru
         r"Retype new password:",                  # 2
         r"Does key login on port \d+ work\?",     # 3
         finish,                                   # 4
-        r"Error at line|rolled back|\[✗\]",       # 5
+        # a warning that the new SSH settings are not what sshd runs with is a failure here:
+        # on a stock image it can only be the script misreading sshd
+        r"Error at line|rolled back|\[✗\]|SSH settings are not in effect|sshd -T failed",  # 5
         r"\[sudo[^\]\n]*\][^\n]*:",               # 6  sudo and sudo-rs both start with "[sudo"
         pexpect.EOF,                              # 7
         pexpect.TIMEOUT,                          # 8
