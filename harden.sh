@@ -1507,6 +1507,8 @@ ssh_apply_script() {
 }
 
 ssh_apply() {
+  # sshd -t needs its runtime directory, which systemd removes whenever ssh.service stops
+  mkdir -p /run/sshd
   sshd -t || return 1
   if ssh_socket_mode; then ensure_ssh_killmode; fi
   bash -e -c "$(ssh_apply_script)"
