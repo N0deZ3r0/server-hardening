@@ -4,7 +4,7 @@ setup_firewall() {
   # No reset — rules added by hand survive a re-run. Only the incoming default is set: the
   # outgoing and routed ones are what they are on a fresh system (allow, deny), and on a
   # server where the admin has changed them — routed traffic allowed for a VPN, say — a
-  # second run of the setup used to put them back without a word.
+  # second run must not put them back.
   ufw default deny incoming
   # UFW re-applies its own sysctl file on every start, after sysctl.d — keep the keys it
   # also sets in line with ours, or it quietly turns them back (it ships log_martians=0)
@@ -40,7 +40,7 @@ setup_firewall() {
   for p in "${extra[@]}"; do
     [[ -z $p ]] && continue
     # UFW has the last word (a range needs a protocol, a port has to be below 65536). Its
-    # refusal is a skipped port, not the end of the setup, which is what it used to be.
+    # refusal is a skipped port, not the end of the setup.
     if [[ $p =~ ^[0-9]+(:[0-9]+)?(/(tcp|udp))?$ ]] && ufw allow "$p" >/dev/null 2>&1; then :
     else warn "$(T "Порт пропущен (диапазону нужен протокол: 8000:8100/tcp):" "Port skipped (a range needs a protocol: 8000:8100/tcp):") $p"; fi
   done

@@ -74,8 +74,7 @@ relaunch_in_tmux() {
 }
 
 # cloud-init says "not started" both before it has begun and on a machine where it is
-# installed but never runs. The second case used to be waited for for 45 minutes and then
-# given up on, so "not started" counts only while the machine is still booting.
+# installed but never runs, so "not started" counts only while the machine is still booting.
 cloud_init_busy() {
   command -v cloud-init >/dev/null || return 1
   local st
@@ -87,8 +86,7 @@ cloud_init_busy() {
 
 # The ports sshd is configured for now. sshd -T needs /run/sshd, which is missing while
 # sshd is socket-activated and has not been started yet (Ubuntu 24.04 from the provider's
-# console). Under pipefail a failing sshd -T used to end the whole run right here instead
-# of falling back to 22.
+# console). A failing sshd -T must not end the run under pipefail: 22 is assumed then.
 current_ssh_ports() {
   local ports
   [[ -d /run/sshd ]] || mkdir -p /run/sshd 2>/dev/null || true
@@ -106,8 +104,7 @@ backup_originals() {
   for bf in /etc/login.defs /etc/issue /etc/issue.net /etc/motd /etc/apt/apt.conf.d/20auto-upgrades \
             /etc/default/apport /etc/default/sysstat /etc/default/motd-news; do
     # mkdir + cp, not `cp --parents`: that fails with "No such file or directory" in
-    # coreutils 9.1, which is what Debian 12 has — the setup stopped right here on it
-    # (found by the first run in a Debian 12 VM)
+    # coreutils 9.1, which is what Debian 12 has
     if [[ -e $bf ]]; then mkdir -p "$BACKUP_DIR${bf%/*}"; cp -a "$bf" "$BACKUP_DIR$bf"; fi
   done
   if [[ -d /etc/ufw ]]; then cp -a /etc/ufw "$BACKUP_DIR/ufw"; fi
@@ -139,7 +136,7 @@ preflight() {
 
   # The provider's cloud-init may run a full apt upgrade (GRUB and kernel included) and
   # restart SSH for 5–20 minutes. Interrupting or rebooting then can leave GRUB half
-  # installed and the server unbootable — seen live, so we wait for it to finish.
+  # installed and the server unbootable, so we wait for it to finish.
   if cloud_init_busy; then
     info "$(T "Хостер ещё делает первичную настройку (cloud-init: обновление системы, загрузчик, SSH)." \
               "The provider is still doing first-boot setup (cloud-init: upgrades, bootloader, SSH).")"

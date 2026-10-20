@@ -1,6 +1,5 @@
 # Keep a copy for later (sudo harden --check / --setup-telegram). Run as `sudo harden`
-# the script is that copy already, and `install` onto itself fails — which under set -e
-# used to end a re-run with an error right before the final report.
+# the script is that copy already, and `install` onto itself would fail under set -e.
 install_self() {
   local src=${1:-$0} dst=/usr/local/sbin/harden
   [[ -f $src ]] || return 0

@@ -32,11 +32,10 @@
 #               The language and the answers of the setup are remembered in /etc/harden.
 # =============================================================================
 set -Eeuo pipefail
-# Files this script writes get ordinary modes whatever umask the caller has. This script
-# itself sets UMASK 027, and `sudo harden …` from such a session passed 027 on to root:
-# drop-ins and the profile hook came out unreadable for normal users (seen live — the
-# login summary lost every service that had a drop-in). Anything private is restricted
-# explicitly where it is written.
+# Files this script writes get ordinary modes whatever umask the caller has: the setup
+# sets UMASK 027, and `sudo harden …` from such a session would pass it on to root and
+# write drop-ins normal users cannot read. Anything private is restricted explicitly
+# where it is written. (Lessons from live runs: docs/decisions/0004-lessons-from-live-runs.md)
 umask 022
 
 HARDEN_VERSION="2026.10.28"
@@ -239,8 +238,7 @@ relaunch_in_tmux() {
 }
 
 # cloud-init says "not started" both before it has begun and on a machine where it is
-# installed but never runs. The second case used to be waited for for 45 minutes and then
-# given up on, so "not started" counts only while the machine is still booting.
+# installed but never runs, so "not started" counts only while the machine is still booting.
 cloud_init_busy() {
   command -v cloud-init >/dev/null || return 1
   local st
@@ -252,8 +250,7 @@ cloud_init_busy() {
 
 # The ports sshd is configured for now. sshd -T needs /run/sshd, which is missing while
 # sshd is socket-activated and has not been started yet (Ubuntu 24.04 from the provider's
-# console). Under pipefail a failing sshd -T used to end the whole run right here instead
-# of falling back to 22.
+# console). A failing sshd -T must not end the run under pipefail: 22 is assumed then.
 current_ssh_ports() {
   local ports
   [[ -d /run/sshd ]] || mkdir -p /run/sshd 2>/dev/null || true
@@ -271,8 +268,7 @@ backup_originals() {
   for bf in /etc/login.defs /etc/issue /etc/issue.net /etc/motd /etc/apt/apt.conf.d/20auto-upgrades \
             /etc/default/apport /etc/default/sysstat /etc/default/motd-news; do
     # mkdir + cp, not `cp --parents`: that fails with "No such file or directory" in
-    # coreutils 9.1, which is what Debian 12 has — the setup stopped right here on it
-    # (found by the first run in a Debian 12 VM)
+    # coreutils 9.1, which is what Debian 12 has
     if [[ -e $bf ]]; then mkdir -p "$BACKUP_DIR${bf%/*}"; cp -a "$bf" "$BACKUP_DIR$bf"; fi
   done
   if [[ -d /etc/ufw ]]; then cp -a /etc/ufw "$BACKUP_DIR/ufw"; fi
@@ -304,7 +300,7 @@ preflight() {
 
   # The provider's cloud-init may run a full apt upgrade (GRUB and kernel included) and
   # restart SSH for 5–20 minutes. Interrupting or rebooting then can leave GRUB half
-  # installed and the server unbootable — seen live, so we wait for it to finish.
+  # installed and the server unbootable, so we wait for it to finish.
   if cloud_init_busy; then
     info "$(T "Хостер ещё делает первичную настройку (cloud-init: обновление системы, загрузчик, SSH)." \
               "The provider is still doing first-boot setup (cloud-init: upgrades, bootloader, SSH).")"
@@ -659,8 +655,7 @@ EOF
   # Log every sudo command, shorter credential cache. One setting at a time, each tried
   # on its own first: sudo-rs, which is sudo on Ubuntu 25.10 and later, does not know every
   # setting the classic sudo has (`logfile`, for one; it logs to the journal instead), and
-  # a single unknown line makes the whole file invalid — the setup stopped on that on
-  # Ubuntu 26.04 (found by the first run in a VM).
+  # a single unknown line makes the whole file invalid.
   local d probe
   probe=$(mktemp)
   : >/etc/sudoers.d/99-hardening
@@ -719,9 +714,8 @@ lock_other_users() {
 #
 # The setting has to live in two places. Our own sysctl.d file is what the kernel reads at
 # boot; but UFW ships /etc/ufw/sysctl.conf with icmp_echo_ignore_all=0 and re-applies it
-# every time it starts, after sysctl.d. With only our file, the first full run reported
-# "no longer answers ping" and the server went on answering (seen live). So the same
-# value is written into UFW's file too.
+# every time it starts, after sysctl.d — with only our file the server goes on answering.
+# So the same value is written into UFW's file too.
 PING_SYSCTL=/etc/sysctl.d/99-hardening-ping.conf
 UFW_SYSCTL=/etc/ufw/sysctl.conf
 
@@ -1039,7 +1033,7 @@ setup_firewall() {
   # No reset — rules added by hand survive a re-run. Only the incoming default is set: the
   # outgoing and routed ones are what they are on a fresh system (allow, deny), and on a
   # server where the admin has changed them — routed traffic allowed for a VPN, say — a
-  # second run of the setup used to put them back without a word.
+  # second run must not put them back.
   ufw default deny incoming
   # UFW re-applies its own sysctl file on every start, after sysctl.d — keep the keys it
   # also sets in line with ours, or it quietly turns them back (it ships log_martians=0)
@@ -1075,7 +1069,7 @@ setup_firewall() {
   for p in "${extra[@]}"; do
     [[ -z $p ]] && continue
     # UFW has the last word (a range needs a protocol, a port has to be below 65536). Its
-    # refusal is a skipped port, not the end of the setup, which is what it used to be.
+    # refusal is a skipped port, not the end of the setup.
     if [[ $p =~ ^[0-9]+(:[0-9]+)?(/(tcp|udp))?$ ]] && ufw allow "$p" >/dev/null 2>&1; then :
     else warn "$(T "Порт пропущен (диапазону нужен протокол: 8000:8100/tcp):" "Port skipped (a range needs a protocol: 8000:8100/tcp):") $p"; fi
   done
@@ -1182,8 +1176,7 @@ pct()  {  # free %: red below 10, yellow below 25
 }
 svc()  {  # installed services only
   # "Installed" is decided by the unit file on disk, not by `systemctl cat`: that fails
-  # for a normal user as soon as one drop-in of the unit is unreadable to them, and every
-  # such service then vanished from the list (seen live: only ufw was left).
+  # for a normal user as soon as one drop-in of the unit is unreadable to them.
   local f state found=""
   for f in /etc/systemd/system /run/systemd/system /usr/local/lib/systemd/system /usr/lib/systemd/system /lib/systemd/system; do
     [ -e "$f/$1.service" ] && { found=1; break; }
@@ -2031,7 +2024,7 @@ while :; do
       # Accepted <method> for <user> from <ip> port <port> ssh2[: <type> <fingerprint>]
       # The full shape is required: with LogLevel VERBOSE sshd also logs
       # "Accepted key ED25519 SHA256:… found at /home/…/authorized_keys:1" for every key it
-      # looks up, which is not a login (seen live as "login: SHA256:… from at").
+      # looks up, which is not a login.
       "Accepted "*" for "*" from "*" port "*)
         read -r -a f <<<"$line"
         s="${f[3]:-?} ${f[5]:-?} ${f[10]:-}"
@@ -2231,7 +2224,7 @@ run_check() {
     v=$(awk '$1=="port"{print $2}' <<<"$cfg" | paste -sd' ' -)
     [[ " $v " == *" 22 "* ]] && chk warn "$(T "Порт 22 (много шума от ботов)" "Port 22 (lots of bot noise)")" || chk pass "$(T "Порт" "Port") $v"
     # An sshd bound to a port its config does not name is a daemon left over from before
-    # a change, still running the old settings (found live after a port switch)
+    # a change, still running the old settings
     list=""
     for u in $(ss -Hltnp 2>/dev/null | grep '"sshd"' | awk '{print $4}' | grep -vE '^(127\.|\[::1\])' \
                | sed -E 's/.*:([0-9]+)$/\1/' | sort -un || true); do
@@ -2268,14 +2261,14 @@ run_check() {
     [[ $(passwd -S "$u" 2>/dev/null | awk '{print $2}') == P ]] && list+="$u "
   done
   [[ -n $list ]] && chk pass "$(T "Аккаунты с входом:" "Login accounts:") $list" || chk warn "$(T "Нет аккаунта с паролем для sudo" "No account with a password for sudo")"
-  # Group rules count as well: "%sudo ALL=(ALL) NOPASSWD: ALL" used to be skipped
+  # Group rules count as well: "%sudo ALL=(ALL) NOPASSWD: ALL"
   list=$(grep -hsE '^[^#].*NOPASSWD' /etc/sudoers /etc/sudoers.d/* | awk '{print $1}' | sort -u | paste -sd' ' - || true)
   [[ -z $list ]] && chk pass "$(T "Нет sudo без пароля" "No passwordless sudo")" || chk warn "$(T "sudo без пароля (NOPASSWD):" "Passwordless sudo (NOPASSWD):") $list"
 
   echo; echo "${C_BOLD}$(T "Сеть и защита" "Network and protection")${C_0}"
   # Output is captured first and searched afterwards. `cmd | grep -q` under pipefail is a
   # trap: grep -q exits at the first match, the writer dies of SIGPIPE, and the pipeline
-  # reports failure for a check that passed — seen live on the auto-updates line below.
+  # reports failure for a check that passed.
   out=$(ufw status verbose 2>/dev/null || true)
   if grep -q '^Status: active' <<<"$out"; then
     grep -q 'deny (incoming)' <<<"$out" && chk pass "$(T "UFW включён, входящие запрещены" "UFW on, incoming denied")" \
@@ -2586,9 +2579,8 @@ run_undo() {
   done
 
   # Ping is the one kernel setting that is watched from outside — a provider's monitoring,
-  # for one — so it is answered again now, not after the next reboot like the rest. Seen on
-  # a live server: undone, and still silent. (An admin's own file that switches it off is
-  # applied again by `sysctl --system` below.)
+  # for one — so it is answered again now, not after the next reboot like the rest. (An
+  # admin's own file that switches it off is applied again by `sysctl --system` below.)
   if [[ -e $PING_SYSCTL ]]; then
     sysctl -q -w net.ipv4.icmp_echo_ignore_all=0 2>/dev/null || true
     sysctl -e -q -w net.ipv6.icmp.echo_ignore_all=0 2>/dev/null || true
@@ -2661,8 +2653,7 @@ run_undo() {
 }
 
 # Keep a copy for later (sudo harden --check / --setup-telegram). Run as `sudo harden`
-# the script is that copy already, and `install` onto itself fails — which under set -e
-# used to end a re-run with an error right before the final report.
+# the script is that copy already, and `install` onto itself would fail under set -e.
 install_self() {
   local src=${1:-$0} dst=/usr/local/sbin/harden
   [[ -f $src ]] || return 0

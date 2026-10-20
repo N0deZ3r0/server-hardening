@@ -57,15 +57,18 @@ any of them.
 Losing access to a remote server is the one mistake that cannot be fixed from the
 outside, so most of the script is about not making it.
 
-- **The old SSH port stays open until you prove the new one works.** The script starts
-  SSH on both ports, prints the exact command, and waits while you log in from a *second*
-  window. Only a "yes" closes the old port. A "no" puts SSH back exactly as it was.
-  Until then the old port still lets you in the old way — the new rules hold for the new
-  port only — so a key that turns out not to work costs nothing, even if the session drops.
-  On a server this script has set up before, "the old way" is the rules of that earlier
-  setup, not the provider's. And the "yes" has to be typed after the question is on the
-  screen: a key pressed while packages were being installed is thrown away, not taken for
-  an answer.
+- **The running SSH is not touched until you prove the new port works.** A second sshd,
+  started for the test alone, answers on the new port with the new settings; the script
+  prints the exact command and waits while you log in from a *second* window. Your SSH as
+  it is — old port, old rules — is left alone meanwhile, so a key that turns out not to
+  work costs nothing, even if the session drops. A "no" just stops the test sshd.
+- **Then SSH goes back by itself unless you confirm again.** Before the server's own sshd
+  takes the new settings, a timer is set to put SSH back as it was in ten minutes. You log
+  in once more, now through the real sshd, and only that "yes" stops the timer and closes
+  the old port. If the session drops or the script is killed in between, the timer does
+  the rollback without them. (How and why: [docs/decisions/0001](docs/decisions/0001-ssh-port-switch.md).)
+  Each "yes" has to be typed after its question is on the screen: a key pressed while
+  packages were being installed is thrown away, not taken for an answer.
 - **Your own IP is whitelisted** in fail2ban, CrowdSec and the firewall rate limit —
   offered, not forced. Without it, a few quick test logins get the administrator banned
   (this happened during testing).
@@ -428,14 +431,12 @@ Knowingly open, with the reason for each:
   the one daemon that had to go kept port 22. CI reproduces that state — `systemctl enable
   ssh.service` on a running, socket-activated unit — in some runs and not in others. It
   also showed the trap in the obvious fix: signalling that listener while systemd reads
-  the unit as inactive freezes PID 1. The script now stops sshd before it switches the
-  units, puts systemd's books straight if the state is already there, and reads success
-  from the socket table. The last
-  complete run from a clean image before that was version 2026.10.7. Version 2026.10.19
-  has since run from a clean image to the end, socket-activated sshd included. That run
-  took the new order — sshd stopped first, units switched after — and never got into the
-  broken state, so the branch that repairs it when it is already there has still run
-  only in CI.
+  the unit as inactive freezes PID 1. Since the release after 2026.10.28 the units are not
+  switched at all: the port reaches `ssh.socket` the way Ubuntu documents it, through
+  `sshd-socket-generator` ([ADR 0001](docs/decisions/0001-ssh-port-switch.md)).
+- **The new SSH switch has run in CI and on VMs only.** The test sshd, the socket kept and
+  the timed rollback (the release after 2026.10.28) run on every change on a VM of each
+  supported release, but no person has taken them through a provider's image yet.
 - **Live runs are on one server** (Ubuntu 24.04, KVM): the full setup from a clean image,
   Telegram alerts, `--check`. Those runs found nine things CI had missed — a false failure
   in the audit, key-lookup log lines reported as logins, two alerts per connect from clients

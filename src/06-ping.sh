@@ -4,9 +4,8 @@
 #
 # The setting has to live in two places. Our own sysctl.d file is what the kernel reads at
 # boot; but UFW ships /etc/ufw/sysctl.conf with icmp_echo_ignore_all=0 and re-applies it
-# every time it starts, after sysctl.d. With only our file, the first full run reported
-# "no longer answers ping" and the server went on answering (seen live). So the same
-# value is written into UFW's file too.
+# every time it starts, after sysctl.d — with only our file the server goes on answering.
+# So the same value is written into UFW's file too.
 PING_SYSCTL=/etc/sysctl.d/99-hardening-ping.conf
 UFW_SYSCTL=/etc/ufw/sysctl.conf
 

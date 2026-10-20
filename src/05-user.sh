@@ -57,8 +57,7 @@ EOF
   # Log every sudo command, shorter credential cache. One setting at a time, each tried
   # on its own first: sudo-rs, which is sudo on Ubuntu 25.10 and later, does not know every
   # setting the classic sudo has (`logfile`, for one; it logs to the journal instead), and
-  # a single unknown line makes the whole file invalid — the setup stopped on that on
-  # Ubuntu 26.04 (found by the first run in a VM).
+  # a single unknown line makes the whole file invalid.
   local d probe
   probe=$(mktemp)
   : >/etc/sudoers.d/99-hardening

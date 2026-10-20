@@ -119,7 +119,7 @@ while :; do
       # Accepted <method> for <user> from <ip> port <port> ssh2[: <type> <fingerprint>]
       # The full shape is required: with LogLevel VERBOSE sshd also logs
       # "Accepted key ED25519 SHA256:… found at /home/…/authorized_keys:1" for every key it
-      # looks up, which is not a login (seen live as "login: SHA256:… from at").
+      # looks up, which is not a login.
       "Accepted "*" for "*" from "*" port "*)
         read -r -a f <<<"$line"
         s="${f[3]:-?} ${f[5]:-?} ${f[10]:-}"

@@ -17,8 +17,7 @@ pct()  {  # free %: red below 10, yellow below 25
 }
 svc()  {  # installed services only
   # "Installed" is decided by the unit file on disk, not by `systemctl cat`: that fails
-  # for a normal user as soon as one drop-in of the unit is unreadable to them, and every
-  # such service then vanished from the list (seen live: only ufw was left).
+  # for a normal user as soon as one drop-in of the unit is unreadable to them.
   local f state found=""
   for f in /etc/systemd/system /run/systemd/system /usr/local/lib/systemd/system /usr/lib/systemd/system /lib/systemd/system; do
     [ -e "$f/$1.service" ] && { found=1; break; }

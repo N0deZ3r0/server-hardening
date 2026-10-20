@@ -238,9 +238,8 @@ run_undo() {
   done
 
   # Ping is the one kernel setting that is watched from outside — a provider's monitoring,
-  # for one — so it is answered again now, not after the next reboot like the rest. Seen on
-  # a live server: undone, and still silent. (An admin's own file that switches it off is
-  # applied again by `sysctl --system` below.)
+  # for one — so it is answered again now, not after the next reboot like the rest. (An
+  # admin's own file that switches it off is applied again by `sysctl --system` below.)
   if [[ -e $PING_SYSCTL ]]; then
     sysctl -q -w net.ipv4.icmp_echo_ignore_all=0 2>/dev/null || true
     sysctl -e -q -w net.ipv6.icmp.echo_ignore_all=0 2>/dev/null || true

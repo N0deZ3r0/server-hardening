@@ -40,7 +40,7 @@ run_check() {
     v=$(awk '$1=="port"{print $2}' <<<"$cfg" | paste -sd' ' -)
     [[ " $v " == *" 22 "* ]] && chk warn "$(T "Порт 22 (много шума от ботов)" "Port 22 (lots of bot noise)")" || chk pass "$(T "Порт" "Port") $v"
     # An sshd bound to a port its config does not name is a daemon left over from before
-    # a change, still running the old settings (found live after a port switch)
+    # a change, still running the old settings
     list=""
     for u in $(ss -Hltnp 2>/dev/null | grep '"sshd"' | awk '{print $4}' | grep -vE '^(127\.|\[::1\])' \
                | sed -E 's/.*:([0-9]+)$/\1/' | sort -un || true); do
@@ -77,14 +77,14 @@ run_check() {
     [[ $(passwd -S "$u" 2>/dev/null | awk '{print $2}') == P ]] && list+="$u "
   done
   [[ -n $list ]] && chk pass "$(T "Аккаунты с входом:" "Login accounts:") $list" || chk warn "$(T "Нет аккаунта с паролем для sudo" "No account with a password for sudo")"
-  # Group rules count as well: "%sudo ALL=(ALL) NOPASSWD: ALL" used to be skipped
+  # Group rules count as well: "%sudo ALL=(ALL) NOPASSWD: ALL"
   list=$(grep -hsE '^[^#].*NOPASSWD' /etc/sudoers /etc/sudoers.d/* | awk '{print $1}' | sort -u | paste -sd' ' - || true)
   [[ -z $list ]] && chk pass "$(T "Нет sudo без пароля" "No passwordless sudo")" || chk warn "$(T "sudo без пароля (NOPASSWD):" "Passwordless sudo (NOPASSWD):") $list"
 
   echo; echo "${C_BOLD}$(T "Сеть и защита" "Network and protection")${C_0}"
   # Output is captured first and searched afterwards. `cmd | grep -q` under pipefail is a
   # trap: grep -q exits at the first match, the writer dies of SIGPIPE, and the pipeline
-  # reports failure for a check that passed — seen live on the auto-updates line below.
+  # reports failure for a check that passed.
   out=$(ufw status verbose 2>/dev/null || true)
   if grep -q '^Status: active' <<<"$out"; then
     grep -q 'deny (incoming)' <<<"$out" && chk pass "$(T "UFW включён, входящие запрещены" "UFW on, incoming denied")" \

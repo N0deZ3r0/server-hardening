@@ -7,6 +7,25 @@ where that version does not work — it is there because someone ran it and it d
 
 The text of each release on GitHub is generated from this file.
 
+## Unreleased
+
+- **SSH switch, rebuilt** ([ADR 0001](docs/decisions/0001-ssh-port-switch.md)). The new
+  port is tried on a second sshd started for the test alone; the running sshd is not
+  touched until that login works. Then, before the server's own sshd takes the new
+  settings, a timer is armed that puts SSH back in ten minutes unless a new login is
+  confirmed — so the way back no longer depends on the script or the session surviving.
+  One more question at the end of the SSH step.
+- On Ubuntu 22.10+ socket activation is kept: the port reaches `ssh.socket` through
+  `sshd-socket-generator`. The unit switching and the workarounds that came with it
+  (stale `MainPID`, killing leftover listeners) are gone.
+- `--check` reports `AuthenticationMethods publickey`, and on any server compares all the
+  kernel settings the setup writes ([ADR 0003](docs/decisions/0003-one-list-for-setup-and-check.md)).
+- A GitHub username for the key download is checked before it goes into the URL.
+- For contributors: the script is edited in `src/` and built into the one `harden.sh` by
+  `tools/build.sh` ([ADR 0002](docs/decisions/0002-one-file-built-from-src.md)); unit tests
+  with bats in `tests/`; the stories behind the code's comments are in
+  [docs/decisions](docs/decisions/README.md).
+
 ## 2026.10.28
 
 Version 2026.10.27 was taken through the whole cycle by hand on a provider's Debian 13

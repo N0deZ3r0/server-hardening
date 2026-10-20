@@ -24,12 +24,17 @@ If it is a vulnerability rather than a bug, do not open an issue: see
 
 ## Checking a change
 
+The script is edited in `src/` and built into `harden.sh`, which is committed with it:
+
 ```bash
-bash -n harden.sh
+tools/build.sh                 # src/ -> harden.sh
 shellcheck -S warning harden.sh
+bats tests/                    # unit tests, no root needed
 ```
 
-CI runs the same, plus the embedded scripts, `--check` and the alerts. Then, on a throwaway server:
+CI runs the same, checks that `harden.sh` is what `src/` builds, tests the embedded
+scripts, `--check` and the alerts, and runs the whole setup on a VM of every supported
+release. Then, on a throwaway server:
 
 1. Reinstall the OS, wait for the provider's cloud-init
 2. Run the script end to end, including the login check from a second window
@@ -38,14 +43,16 @@ CI runs the same, plus the embedded scripts, `--check` and the alerts. Then, on 
 
 ## Style
 
-- One file. `curl … && sudo bash harden.sh` must keep working without anything else.
+- One file to run. `curl … && sudo bash harden.sh` must keep working without anything
+  else; `src/` is only where it is edited ([why](docs/decisions/0002-one-file-built-from-src.md)).
 - Every user-facing string goes through `T "русский" "english"`.
-- Comments say *why*, especially where the obvious approach was tried and failed.
+- Comments say *why*, briefly. The story of how something was found goes into
+  [docs/decisions](docs/decisions/README.md).
 
 ## Releasing
 
 ```bash
-tools/prepare-release.sh 2026.10.0     # version into harden.sh, URL and checksum into both READMEs
+tools/prepare-release.sh 2026.10.0     # version into src/, harden.sh built, URL and checksum into both READMEs
 git commit -am "Release v2026.10.0"
 git push origin main                   # wait for CI to pass
 git tag v2026.10.0 && git push origin v2026.10.0
@@ -82,12 +89,17 @@ pull request указано, какая ОС, версия и хостер. `bas
 
 ## Проверка изменения
 
+Скрипт правится в `src/` и собирается в `harden.sh`, который коммитится вместе с ним:
+
 ```bash
-bash -n harden.sh
+tools/build.sh                 # src/ -> harden.sh
 shellcheck -S warning harden.sh
+bats tests/                    # юнит-тесты, root не нужен
 ```
 
-CI делает то же самое, проверяет встроенные скрипты, `--check` и уведомления. Затем на
+CI делает то же самое, проверяет, что `harden.sh` собран из `src/`, проверяет встроенные
+скрипты, `--check` и уведомления и прогоняет всю настройку на ВМ каждой поддерживаемой
+версии. Затем на
 одноразовом сервере:
 
 1. Переустановите ОС, дождитесь cloud-init хостера
@@ -97,15 +109,16 @@ CI делает то же самое, проверяет встроенные с
 
 ## Стиль
 
-- Один файл. `curl … && sudo bash harden.sh` должно работать без чего-либо ещё.
+- Один файл для запуска. `curl … && sudo bash harden.sh` должно работать без чего-либо
+  ещё; `src/` — только место, где он правится ([почему](docs/decisions/0002-one-file-built-from-src.md)).
 - Каждая строка для пользователя проходит через `T "русский" "english"`.
-- Комментарии объясняют *почему* — особенно там, где очевидный способ был опробован и
-  не сработал.
+- Комментарии кратко объясняют *почему*. История того, как что-то нашлось, — в
+  [docs/decisions](docs/decisions/README.md).
 
 ## Выпуск версии
 
 ```bash
-tools/prepare-release.sh 2026.10.0     # версия в harden.sh, URL и контрольная сумма в оба README
+tools/prepare-release.sh 2026.10.0     # версия в src/, сборка harden.sh, URL и контрольная сумма в оба README
 git commit -am "Release v2026.10.0"
 git push origin main                   # дождаться зелёного CI
 git tag v2026.10.0 && git push origin v2026.10.0

@@ -32,11 +32,10 @@
 #               The language and the answers of the setup are remembered in /etc/harden.
 # =============================================================================
 set -Eeuo pipefail
-# Files this script writes get ordinary modes whatever umask the caller has. This script
-# itself sets UMASK 027, and `sudo harden …` from such a session passed 027 on to root:
-# drop-ins and the profile hook came out unreadable for normal users (seen live — the
-# login summary lost every service that had a drop-in). Anything private is restricted
-# explicitly where it is written.
+# Files this script writes get ordinary modes whatever umask the caller has: the setup
+# sets UMASK 027, and `sudo harden …` from such a session would pass it on to root and
+# write drop-ins normal users cannot read. Anything private is restricted explicitly
+# where it is written. (Lessons from live runs: docs/decisions/0004-lessons-from-live-runs.md)
 umask 022
 
 HARDEN_VERSION="2026.10.28"
